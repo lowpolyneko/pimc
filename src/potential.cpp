@@ -85,6 +85,7 @@ REGISTER_EXTERNAL_POTENTIAL(             "fixed_lj",       FixedPositionLJPotent
 REGISTER_EXTERNAL_POTENTIAL(            "gasp_prim",          Gasparini_1_Potential, GET_SETUP(), setup.params["empty_width_z"].as<double>(), setup.params["empty_width_y"].as<double>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL(        "graphenelut3d",         GrapheneLUT3DPotential, GET_SETUP(), setup.params["graphenelut3d_file_prefix"].as<std::string>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("graphenelut3dgenerate", GrapheneLUT3DPotentialGenerate, GET_SETUP(), setup.params["strain"].as<double>(), setup.params["poisson"].as<double>(), setup.params["carbon_carbon_dist"].as<double>(), setup.params["lj_sigma"].as<double>(), setup.params["lj_epsilon"].as<double>(), setup.params["k_max"].as<int>(), setup.params["xres"].as<int>(), setup.params["yres"].as<int>(), setup.params["zres"].as<int>(), setup.get_cell())
+REGISTER_EXTERNAL_POTENTIAL("GPPotential", GPPotential, GET_SETUP(), setup.get_cell())
 #endif
 
 // ---------------------------------------------------------------------------
@@ -4825,6 +4826,176 @@ std::tuple< DynamicArray<double,3>, DynamicArray<double,3>, DynamicArray<double,
  * Destructor.
 ******************************************************************************/
 GrapheneLUT3DPotentialGenerate::~GrapheneLUT3DPotentialGenerate() {
+}
+#endif
+#if NDIM > 2
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GPPotential Potential Class---------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+/**************************************************************************//**
+ * Constructor.
+******************************************************************************/
+GPPotential::GPPotential (const Container *_boxPtr) : PotentialBase() {
+
+    boxPtr = _boxPtr;
+
+    Lz = boxPtr->side[NDIM-1];
+    Ly = boxPtr->side[NDIM-2];
+    Lx = boxPtr->side[NDIM-3];
+    /* Arbitrary hard-wall cutoff 1 van der Waals radius (1.4 A) from Lz */
+    Wallcz = Lz/2.0 - 1.4;
+    Wallcx = Lx/2.0 - 1.4;
+    Wallcy = Ly/2.0 - 1.4;
+
+    /* Inverse width of the wall onset */
+    invWallWidth = 20.0;
+
+    /* Fixed positions of FILENAME */
+    std::array<double,4> xpoint;               // The loaded position, the first number is the type of atom.
+
+    numPoints = 0;
+    trainx.resize(16000);
+    double tempval = 0;
+    int p = 0;
+    int total = 0;
+    int j = 0;
+    std::ifstream fin("testdata.dat", std::ios::binary);
+    while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
+	j = total % 4;
+	xpoint[j] = tempval;
+	total++;
+	if ((total+1) % 4 == 0) {
+	    numPoints++;	
+	    if (numPoints >= int(trainx.size()))
+            	trainx.resizeAndPreserve(numPoints);
+	    trainx(p) = xpoint;
+	    
+	    p++;
+	}
+    }
+    fin.close();
+    std::cout << numPoints << std::endl;
+    trainx.resizeAndPreserve(numPoints);   
+    
+    /* We start with an array of size 500 */
+    numPoints = 0;
+    p = 0;
+    tempval = 0;
+    prod.resize(16000);
+    std::ifstream fin2("proddata.dat", std::ios::binary);
+    while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
+        numPoints++;
+        if (numPoints >= int(prod.size()))
+            prod.resizeAndPreserve(numPoints);
+	prod(p) = tempval;
+	p++;
+    }
+    fin2.close();
+    std::cout << numPoints << std::endl;
+    prod.resizeAndPreserve(numPoints);   
+}
+
+/**************************************************************************//**
+ * Destructor.
+******************************************************************************/
+GPPotential::~GPPotential() {
+}
+
+/**************************************************************************//**
+ *  Return the value of the interaction between a benzene ring
+ *  and a helium adatom at a position, r, above the sheet.
+
+ *  @param r the position of a helium particle
+ *  @return GP-evaluated potential for Benzene-Helium
+******************************************************************************/
+double GPPotential::V(const dVec &r) {
+    
+    DynamicArray<double,1> kvec; 
+    kvec.resize(numPoints);
+    //Rotate the point 
+    double x = r[0];
+    double y = r[1];
+    double z = r[2];
+    double finx = 0;
+    double finy = 0;
+    //Reflect z 
+    if (z <= 0) {z = -z;}    
+    //Calculate angle
+    double pi = M_PI;
+    double angle = std::round(rad2deg(atan2(y,x))*10000.0)/10000.0; //Angle in degrees
+    double rotateangle = 0;
+    if (angle < 0) {angle = 180 + (180 + angle);}
+    if (angle <= 30) {
+       finx = x;
+       finy = y;
+    } else {
+        //Calculate rotation angle
+        rotateangle = fmod(angle, 60.0) - angle;
+        //if (rotateangle < 0) {rotateangle = pi + (pi + rotateangle);}
+        //Rotate and/or reflect the point
+        if ((angle + rotateangle) > 30) {
+	    rotateangle = deg2rad(rotateangle);
+            double rotatedanglex = cos(rotateangle)*x - sin(rotateangle)*y;
+            double rotatedangley = sin(rotateangle)*x + cos(rotateangle)*y;
+            finx = cos(pi/3)*rotatedanglex + sin(pi/3)*rotatedangley;
+            finy = sin(pi/3)*rotatedanglex - cos(pi/3)*rotatedangley;
+        } else {
+	    rotateangle = deg2rad(rotateangle);
+            finx = cos(rotateangle)*x - sin(rotateangle)*y;
+            finy = sin(rotateangle)*x + cos(rotateangle)*y;
+        }
+    } 
+    // Thus our rotatet points are now finx, finy and z
+    std::array<double,4> rp;
+    rp[0] = finx;
+    rp[1] = finy;
+    rp[2] = z;
+    rp[3] = 1.0;
+    double rho = sqrt(finx*finx + finy*finy);
+    if (rho < 3 && z < 2) {
+        return 10000; //Hardcoded cutoff
+    }
+    std::array<double,4> new_nrm;
+    //Normalise the new point
+    new_nrm = (rp - xoffset)/xscale;
+    const double* newnrmptr = &new_nrm[0];
+    //for (int i = 0; i < 4; i++) {
+    //    new_nrm(i) = (rp(i) - xoffset[i])/xscale[i];
+    //}
+    //Construct the k-vector   
+    for (int k =0; k < numPoints; k++) {
+	const double* kpr = &trainx(k)[0];
+        kvec(k) = kernel(kpr,newnrmptr);
+        //for (int i = 0; i < 4; i++) {
+            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << "," << kvec(k) << std::endl;
+        //}
+    }   
+    //Obtain the inference 
+    double val_gp = mean + dot(kvec,prod);
+    //std::cout<<x<<","<<y<<","<<z<<std::endl;
+    //for (int k = 0; k < numPoints; k++) {
+    //	std::cout<<kvec(k)<<","<<prod(k)<<","<<std::endl;
+    //}
+    //std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << mean<<"," <<val_gp<<std::endl;
+    //Unstandardise output
+    val_gp = meany + stdy*val_gp; 
+    //Add long-range part
+    double rnorm = sqrt(finx*finx + finy*finy + z*z);
+    double h_long = 1.0 / (1.0 + std::exp(-gama * (rnorm - r0)));
+    if (rho > 5 || z > 6.5) {
+	val = (1 - h_long)*val_gp + h_long*long_range(finx,finy,z); 
+    } else {
+        val = val_gp;
+    	//std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << val_gp/0.695 << "," << val << std::endl; 
+    }		
+
+    //Convert to Kelvin
+    val = val/0.695;
+    //std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << val_gp/0.695 << "," << long_range(finx,finy,z) << "," << val << std::endl; 
+    return val;
 }
 #endif
 

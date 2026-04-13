@@ -1835,6 +1835,133 @@ class GrapheneLUT3DPotentialGenerate: public PotentialBase  {
             > get_V3D_all( double, double, double, int, int, int, double );
 };
 #endif
+#if NDIM > 2
+// ========================================================================
+// GaussianProcess Potential Class
+// ========================================================================
+/** 
+ * @brief Implements a gaussian process trained on accurate ab-inito calculation for the Benzene-He potential energy
+ *
+ * Author: Sutirtha Paul
+ * 
+ */
+class GPPotential: public PotentialBase  {
+
+    public:
+        GPPotential(const Container*);
+        ~GPPotential();
+
+        double V(const dVec &r);
+    private:
+        const Container *boxPtr;
+        double Lz;
+        double Lx;
+        double Ly;
+        double Wallcz;
+        double Wallcy;
+        double Wallcx;
+        double invWallWidth;
+	
+	//Gaussian process model state
+	const std::array<double,4> xoffset = {0.0, 0.0, -0.09459459, 0.0};
+        const std::array<double,4> xscale = {7.0, 3.5, 7.09459459, 1.0};
+        const std::array<double,3> ell1 = {0.78638807, 2.17270815, 0.77220716};
+        const std::array<double,3> ell2 = {2.03248109, 5.05874827, 1.71032378};
+        const std::array<double,3> inv_ell1 = 1.0 / ell1;
+	const std::array<double,3> inv_ell2 = 1.0 / ell2;
+	const double power = 0.63911297;
+	const double oscale = 814.69663559;
+	const double mean = 22.0553313;
+	const double meany = 8.64215696;
+	const double stdy = 104.91133484;
+
+
+	//Long-range parameters
+	const double r0       = 5.765366674e+00;
+	const double gama     = 1.671477473e+01;
+
+	const double x1       = 2.290626821e+05;
+	const double x2       = 4.069217828e+06;
+	const double x3       = 9.542607077e+07;
+	const double x4       = 0.0;
+	const double x5       = -4.775615288e+04;
+	const double x6       = -1.263899296e+07;
+	const double x7       = -2.959330054e+08;
+	const double x8       = 0.0;
+	const double x9       = 9.511488779e+05;
+	const double x10      = 2.551023972e+08;
+	const double x11      = 0.0;
+	const double x12      = 1.883887454e+08;
+
+	static constexpr double sqrt5 = 2.2360679774997896964;
+
+        DynamicArray<std::array<double,4>,1> trainx;      // The normalised training vectors
+        DynamicArray<double,1> prod;           // The right hand vector K^{-1}(Y - mu) where Y is standardised 
+	
+	int numPoints;              // The total number of training points
+        double val;
+
+	double matern_kernel(const double*, const double*, const std::array<double,3>);
+        double kernel(const double*, const double*);
+	double deg2rad(double);
+	double rad2deg(double);
+	double long_range(double,double,double);
+};
+inline double GPPotential::matern_kernel(const double* x1, const double* x2, const std::array<double,3> inv_ell) {
+    //Calculate scaled distance between points
+    double sep = 0;
+    auto dx0 = (x1[0] - x2[0]) * inv_ell[0];
+    auto dx1 = (x1[1] - x2[1]) * inv_ell[1];
+    auto dx2 = (x1[2] - x2[2]) * inv_ell[2];
+    sep = dx0*dx0 + dx1*dx1 + dx2*dx2;
+    
+    double sep12 = sqrt(sep);
+    //std::cout << tsep" << sep << std::endl;
+    double val = (1 + sqrt5*sep12 + 5*(sep/3))*exp(-sqrt5*sep12);
+    return val;
+}
+inline double GPPotential::kernel(const double* x1, const double* x2) {
+    int z1 = x1[3];
+    int z2 = x2[3];
+    
+    double bias_factor = (1 - z1)*(1-z2)*std::pow((1+z1*z2),power);
+    double k1 = matern_kernel(x1,x2,inv_ell1);
+    double k2 = matern_kernel(x1,x2,inv_ell2);
+    //std::cout << bias_factor << "," << k1 << "," << k2 << std::endl;
+    double covar_val = oscale*(k1 + bias_factor*k2);
+    return covar_val;
+
+}
+inline double GPPotential::deg2rad(double ang) {
+    return (ang*M_PI)/180.0;
+}
+inline double GPPotential::rad2deg(double ang) {
+    return (ang*180.0)/M_PI;
+}
+inline double GPPotential::long_range(double x, double y, double z) {
+
+    double rnorm = std::sqrt(x * x + y * y + z * z);
+    double ph0 = std::atan2(y, x);
+    double th0 = std::acos(z / rnorm);
+    double tt = std::cos(th0);
+    double fi = ph0;
+
+    // Angular dependence
+    double normm1 = std::sqrt(5.0) / 5.0;
+    double normm2 = std::sqrt(13.0) / 13.0;
+    double normm3 = 0.1792151994e-4;
+
+    double p1 = -x1 / std::pow(rnorm, 6) - x2 / std::pow(rnorm, 8) - x3 / std::pow(rnorm, 10) - x4 / std::pow(rnorm, 12);
+    double p2 = -normm1 * (1.5 * tt * tt - 0.5) *
+                (x5 / std::pow(rnorm, 6) + x6 / std::pow(rnorm, 8) + x7 / std::pow(rnorm, 10) + x8 / std::pow(rnorm, 12));
+    double p3 = -normm2 * (3.0 / 8.0 + 35.0 / 8.0 * std::pow(tt, 4) - 15.0 / 4.0 * tt * tt);
+    double p4 = (x9 / std::pow(rnorm, 8) + x10 / std::pow(rnorm, 10) + x11 / std::pow(rnorm, 12));
+    double p5 = -normm3 * 10395.0 * std::pow(1 - tt * tt, 3) * std::cos(6 * fi) * x12 / std::pow(rnorm, 10);
+    double vdw = p1 + p2 + p3 * p4 + p5;
+
+    return vdw;
+}
+#endif
 
 #endif // POTENTIAL_H
 
