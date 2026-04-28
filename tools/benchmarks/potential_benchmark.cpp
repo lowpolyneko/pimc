@@ -1,8 +1,12 @@
 #include "common.h"
+#include "action.h"
 #include "container.h"
 #include "factory_potential.h"
+#include "lookuptable.h"
+#include "path.h"
 #include "potential.h"
 #include "setup.h"
+#include "wavefunction.h"
 
 #include <algorithm>
 #include <chrono>
@@ -82,7 +86,7 @@ void printHelp(const char* exe)
         << "  --benchmark-list                 list registered potentials\n"
         << "  --benchmark-kind KIND            interaction or external\n"
         << "  --benchmark-potential NAME       potential to instantiate\n"
-        << "  --benchmark-method METHOD        value, gradient, pair, or all\n"
+        << "  --benchmark-method METHOD        value, gradient, pair, action, or all\n"
         << "  --benchmark-iterations N         calls per measured method [1000000]\n"
         << "  --benchmark-samples N            generated sample positions [4096]\n"
         << "  --benchmark-min R                minimum sample radius [0.25]\n"
@@ -314,8 +318,9 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
     if (bench.method != "value" && bench.method != "gradient" &&
-            bench.method != "pair" && bench.method != "all") {
-        std::cerr << "error: --benchmark-method must be value, gradient, pair, or all" << std::endl;
+            bench.method != "pair" && bench.method != "action" &&
+            bench.method != "all") {
+        std::cerr << "error: --benchmark-method must be value, gradient, pair, action, or all" << std::endl;
         return EXIT_FAILURE;
     }
     if (bench.iterations == 0 || bench.samples == 0 ||
@@ -452,6 +457,27 @@ int main(int argc, char* argv[])
         runTimed("V(r,r2)", bench.iterations, [&](std::size_t i) {
             return potential->V(samples[i % samples.size()],
                     samples[(i + 1) % samples.size()]);
+        });
+    }
+
+    if (bench.method == "action" || bench.method == "all") {
+        MTRand random(1234);
+        Container* boxPtr = setup.get_cell();
+        std::unique_ptr<PotentialBase> interaction(setup.interactionPotential());
+        DynamicArray<dVec,1> initialPos =
+            potential->initialConfig(boxPtr, random, constants()->initialNumParticles());
+        LookupTable lookup(boxPtr, constants()->numTimeSlices(),
+                constants()->initialNumParticles());
+        Path path(boxPtr, lookup, constants()->numTimeSlices(),
+                initialPos, constants()->numBroken());
+        std::unique_ptr<WaveFunctionBase> waveFunction(setup.waveFunction(path, lookup));
+        std::unique_ptr<ActionBase> action(setup.action(path, lookup, potential.get(),
+                    interaction.get(), waveFunction.get()));
+
+        runTimed("actionV(slice)", bench.iterations, [&](std::size_t i) {
+            const auto value = action->potential(
+                    static_cast<int>(i % constants()->numTimeSlices()));
+            return value[0] + value[1];
         });
     }
 
