@@ -16,6 +16,15 @@
 #include <boost/math/special_functions/ellint_2.hpp>
 
 #include <stdexcept>
+#ifdef USE_HIP
+#include "potential_gpu.hip.h"
+#endif
+#ifdef USE_CUDA
+#include "potential_gpu.cuh"
+#endif
+#ifdef USE_SYCL
+#include "potential_gpu.sycl.h"
+#endif
 
 /**************************************************************************//**
  * Creating and Registering New Potentials
@@ -5348,13 +5357,80 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
                     % numPoints % _trainingFile % numCoefficients % _coefficientFile));
     }
     prod.resizeAndPreserve(numCoefficients);   
+#ifdef USE_GPU
+    GPU_ASSERT(gpu_stream_create(gpStream));
+
+    constexpr double gpOutputScale = 814.69663559;
+    std::vector<double> flatGpuData(4 * numPoints);
+    for (int i = 0; i < numPoints; ++i) {
+        flatGpuData[4 * i + 0] = trainx(i)[0];
+        flatGpuData[4 * i + 1] = trainx(i)[1];
+        flatGpuData[4 * i + 2] = trainx(i)[2];
+        flatGpuData[4 * i + 3] = gpOutputScale * prod(i);
+    }
+
+    GPU_ASSERT(gpu_malloc_device(double, d_trainx, flatGpuData.size(), gpStream));
+    GPU_ASSERT(gpu_memcpy_host_to_device(d_trainx, flatGpuData.data(),
+                sizeof(double) * flatGpuData.size(), gpStream));
+    GPU_ASSERT(gpu_wait(gpStream));
+#endif
 }
 
 /**************************************************************************//**
  * Destructor.
 ******************************************************************************/
 GPPotential::~GPPotential() {
+#ifdef USE_GPU
+    if (d_trainx)
+        GPU_ASSERT(gpu_free(d_trainx, gpStream));
+    if (d_positions)
+        GPU_ASSERT(gpu_free(d_positions, gpStream));
+    if (d_values)
+        GPU_ASSERT(gpu_free(d_values, gpStream));
+    GPU_ASSERT(gpu_wait(gpStream));
+    GPU_ASSERT(gpu_stream_destroy(gpStream));
+#endif
 }
+
+#ifdef USE_GPU
+void GPPotential::gpuV(const double* positions, double* values, int count) {
+    if (count < 0)
+        throw std::runtime_error("GPPotential gpuV count must be non-negative.");
+    if (count == 0)
+        return;
+
+#if GP_GPU_CPU_FALLBACK_MAX_COUNT > 0
+    if (count <= GP_GPU_CPU_FALLBACK_MAX_COUNT) {
+        for (int i = 0; i < count; ++i) {
+            dVec r;
+            for (int dim = 0; dim < NDIM; ++dim)
+                r[dim] = positions[NDIM * i + dim];
+            values[i] = V(r);
+        }
+        return;
+    }
+#endif
+
+    if (count > gpuBufferCapacity) {
+        if (d_positions)
+            GPU_ASSERT(gpu_free(d_positions, gpStream));
+        if (d_values)
+            GPU_ASSERT(gpu_free(d_values, gpStream));
+        GPU_ASSERT(gpu_wait(gpStream));
+        GPU_ASSERT(gpu_malloc_device(double, d_positions, NDIM * count, gpStream));
+        GPU_ASSERT(gpu_malloc_device(double, d_values, count, gpStream));
+        gpuBufferCapacity = count;
+    }
+
+    GPU_ASSERT(gpu_memcpy_host_to_device(d_positions, positions,
+                sizeof(double) * NDIM * count, gpStream));
+    gp_potential_gpu_launcher(gpStream, d_values, d_positions, count,
+            d_trainx, numPoints);
+    GPU_ASSERT(gpu_memcpy_device_to_host(values, d_values,
+                sizeof(double) * count, gpStream));
+    GPU_ASSERT(gpu_wait(gpStream));
+}
+#endif
 
 /**************************************************************************//**
  *  Return the value of the interaction between a benzene ring
@@ -5364,9 +5440,6 @@ GPPotential::~GPPotential() {
  *  @return GP-evaluated potential for Benzene-Helium
 ******************************************************************************/
 double GPPotential::V(const dVec &r) {
-    
-    DynamicArray<double,1> kvec; 
-    kvec.resize(numPoints);
     //Rotate the point 
     double x = r[0];
     double y = r[1];
@@ -5417,16 +5490,17 @@ double GPPotential::V(const dVec &r) {
     //for (int i = 0; i < 4; i++) {
     //    new_nrm(i) = (rp(i) - xoffset[i])/xscale[i];
     //}
-    //Construct the k-vector   
+    // Accumulate k-vector dot product directly to avoid per-call temporary allocation.
+    double kernelDot = 0.0;
     for (int k =0; k < numPoints; k++) {
 	const double* kpr = &trainx(k)[0];
-        kvec(k) = kernel(kpr,newnrmptr);
+        kernelDot += kernel(kpr,newnrmptr) * prod(k);
         //for (int i = 0; i < 4; i++) {
-            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << "," << kvec(k) << std::endl;
+            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << std::endl;
         //}
     }   
     //Obtain the inference 
-    double val_gp = mean + dot(kvec,prod);
+    double val_gp = mean + kernelDot;
     //std::cout<<x<<","<<y<<","<<z<<std::endl;
     //for (int k = 0; k < numPoints; k++) {
     //	std::cout<<kvec(k)<<","<<prod(k)<<","<<std::endl;

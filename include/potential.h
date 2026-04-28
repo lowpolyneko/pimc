@@ -11,6 +11,9 @@
 
 #include "common.h"
 #include "constants.h"
+#ifdef USE_GPU
+#include "common_gpu.h"
+#endif
 
 class Path;
 class LookupTable;
@@ -2077,6 +2080,9 @@ class GPPotential: public PotentialBase  {
         ~GPPotential();
 
         double V(const dVec &r);
+#ifdef USE_GPU
+        void gpuV(const double*, double*, int);
+#endif
     private:
         const Container *boxPtr;
         double Lz;
@@ -2125,6 +2131,13 @@ class GPPotential: public PotentialBase  {
 	
 	int numPoints;              // The total number of training points
         double val;
+#ifdef USE_GPU
+        gpu_stream_t gpStream;
+        double *d_trainx = nullptr;
+        double *d_positions = nullptr;
+        double *d_values = nullptr;
+        int gpuBufferCapacity = 0;
+#endif
 
 	double matern_kernel(const double*, const double*, const std::array<double,3>);
         double kernel(const double*, const double*);

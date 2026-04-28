@@ -25,6 +25,10 @@
     #ifndef MAX_GPU_STREAMS
         #define MAX_GPU_STREAMS 1 ///< Max number of concurrent GPU streams
     #endif
+
+    #ifndef GP_GPU_CPU_FALLBACK_MAX_COUNT
+        #define GP_GPU_CPU_FALLBACK_MAX_COUNT 1 ///< Use scalar CPU evaluation for very small GP batches
+    #endif
     #ifdef USE_HIP
         #include "hip/hip_runtime.h"
         #define GPU_ASSERT(x) (assert((x)==hipSuccess))
@@ -80,7 +84,7 @@
             #error "GPU_BLOCK_SIZE must be >= 2*SUB_GROUP_SIZE"
         #endif 
         typedef sycl::queue gpu_stream_t;
-        #define gpu_stream_create(x) x = sycl::queue()
+        #define gpu_stream_create(x) x = sycl::queue(sycl::property::queue::in_order())
         #define gpu_stream_destroy(x) do {} while(0)
         #define gpu_malloc_device(T, x, y, z) x = sycl::malloc_device< T >( y, z )
         #define gpu_memcpy_host_to_device(w, x, y, z) z.memcpy(w, x, y)
