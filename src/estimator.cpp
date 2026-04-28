@@ -11,6 +11,7 @@
 #include "potential.h"
 #include "communicator.h"
 #include "factory.h"
+#include <vector>
 #ifdef USE_HIP
     #include "estimator_gpu.hip.h"
 #endif
@@ -1865,10 +1866,21 @@ void PlaneAverageExternalPotentialEstimator::accumulate() {
 
     beadLocator beadIndex;
     dVec pos;
+    std::vector<dVec> externalPositions;
+    std::vector<int> externalBins;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
 
     for (int slice = startSlice; slice < endDiagSlice; slice += actionPtr->period) {
 	beadIndex[0] = slice;
         int numBeads = path.numBeadsAtSlice(slice);
+        externalPositions.clear();
+        externalBins.clear();
+        externalFactors.clear();
+        externalPositions.reserve(numBeads);
+        externalBins.reserve(numBeads);
+        externalFactors.reserve(numBeads);
+
         for (int ptcl = 0; ptcl < numBeads; ptcl++) {
             beadIndex[1] = ptcl;
             pos = path(beadIndex);
@@ -1884,10 +1896,19 @@ void PlaneAverageExternalPotentialEstimator::accumulate() {
 
             /* update the external potential in each grid box */
             if (index < numGrid) {
-                norm(index) += sliceFactor[slice];
-                estimator(index) += sliceFactor[slice]*actionPtr->externalPtr->V(pos);
+                externalPositions.push_back(pos);
+                externalBins.push_back(index);
+                externalFactors.push_back(sliceFactor[slice]);
             }
         } //ptcl
+
+        externalValues.resize(externalPositions.size());
+        actionPtr->externalPtr->V(externalPositions.data(), externalValues.data(),
+                static_cast<int>(externalPositions.size()));
+        for (std::size_t i = 0; i < externalValues.size(); ++i) {
+            norm(externalBins[i]) += externalFactors[i];
+            estimator(externalBins[i]) += externalFactors[i] * externalValues[i];
+        }
     } //slice
 }
 
@@ -4634,14 +4655,23 @@ void CylinderLinearPotentialEstimator::accumulate1() {
     double totV = 0.0;
     dVec r1,r2;         // The two bead positions
     r1 = dVec{};
+    std::vector<dVec> externalPositions(NRADSEP);
+    std::vector<double> externalValues(NRADSEP);
 
     dVec sep;           // The bead separation
     beadLocator bead2;  // The bead locator
 
+    for (int n = 0; n < NRADSEP; n++) {
+        r1 = dVec{};
+        r1[NDIM-1] = -0.5*Lz + n*dz;
+        externalPositions[n] = r1;
+    }
+    actionPtr->externalPtr->V(externalPositions.data(), externalValues.data(), NRADSEP);
+
     /* sample all positions along the pore */
     for (int n = 0; n < NRADSEP; n++) {
 
-        r1[NDIM-1] = -0.5*Lz + n*dz;
+        r1 = externalPositions[n];
 
         /* Get the external potential */
         totV = 0.0;
@@ -4661,7 +4691,7 @@ void CylinderLinearPotentialEstimator::accumulate1() {
         } // bead2
 
         /* Add the constant piece from the external potential */
-        totV += actionPtr->externalPtr->V(r1);
+        totV += externalValues[n];
 
         estimator(n) += totV;
     } // n
@@ -4678,12 +4708,19 @@ void CylinderLinearPotentialEstimator::accumulate() {
 
     double totV = 0.0;
     dVec r1,r2;         // The two bead positions
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalTotals;
+    std::vector<int> externalBins;
+    std::vector<double> externalValues;
 
     dVec sep;           // The bead separation
     beadLocator bead1,bead2;  // The bead locators
 
     for (int slice = 0; slice < path.numTimeSlices; slice++) {
         bead1[0] = slice;
+        externalPositions.clear();
+        externalTotals.clear();
+        externalBins.clear();
 
         for (bead1[1] = 0; bead1[1] < path.numBeadsAtSlice(slice); bead1[1]++) {
 
@@ -4710,19 +4747,25 @@ void CylinderLinearPotentialEstimator::accumulate() {
                     } // bead2 is not inside the core
                 } //bead2
 
-                /* Add the contribution of the external potential energy */
-                totV += actionPtr->externalPtr->V(r1);
-
                 /* determine the z-index of bead 1 */
                 int k = int((0.5*Lz + r1[NDIM-1])/dz);
                 if (k < NRADSEP) {
-                    estimator(k) += totV; // /constants()->numTimeSlices();
-                    norm(k) += 1.0;
+                    externalPositions.push_back(r1);
+                    externalTotals.push_back(totV);
+                    externalBins.push_back(k);
                 }
 
             } // bead1 is inside the core
 
         } // bead1
+
+        externalValues.resize(externalPositions.size());
+        actionPtr->externalPtr->V(externalPositions.data(), externalValues.data(),
+                static_cast<int>(externalPositions.size()));
+        for (std::size_t i = 0; i < externalValues.size(); ++i) {
+            estimator(externalBins[i]) += externalTotals[i] + externalValues[i];
+            norm(externalBins[i]) += 1.0;
+        }
 
     } // slice
 }
@@ -4773,6 +4816,9 @@ void CylinderRadialPotentialEstimator::accumulate() {
     double totV = 0.0;
     dVec r1,r2;         // The two bead positions
     dVec sep;           // The bead separation
+    std::vector<dVec> externalPositions(NRADSEP);
+    std::vector<double> interactionTotals(NRADSEP);
+    std::vector<double> externalValues(NRADSEP);
 
     beadLocator bead2;  // The bead locator
 
@@ -4804,10 +4850,13 @@ void CylinderRadialPotentialEstimator::accumulate() {
             } // bead2
         } // slice
 
-        totV /= 1.0*path.numTimeSlices;
-        totV += actionPtr->externalPtr->V(r1);
+        externalPositions[n] = r1;
+        interactionTotals[n] = totV / (1.0*path.numTimeSlices);
+    } // n
 
-        estimator(n) += totV;
+    actionPtr->externalPtr->V(externalPositions.data(), externalValues.data(), NRADSEP);
+    for (int n = 0; n < NRADSEP; n++) {
+        estimator(n) += interactionTotals[n] + externalValues[n];
     } // n
 }
 
@@ -4830,6 +4879,10 @@ void CylinderRadialPotentialEstimator::accumulate1() {
     found1 = found2 = false;
     radPot.fill(0.0);
     int numFound1 = 0;
+    std::vector<dVec> externalPositions;
+    std::vector<double> interactionTotals;
+    std::vector<int> radialBins;
+    std::vector<double> externalValues;
 
     /* We sum up the external and interaction energy over all slices*/
     for (int slice = 0; slice < path.numTimeSlices; slice++) {
@@ -4847,7 +4900,7 @@ void CylinderRadialPotentialEstimator::accumulate1() {
             /* If the first particle is in the central chain, looks for its
              * interacting partners */
             if (found1) {
-                totV = actionPtr->externalPtr->V(r1);
+                totV = 0.0;
                 numFound1 ++;
 
                 /* We don't have to worry about double counting here, as
@@ -4868,11 +4921,20 @@ void CylinderRadialPotentialEstimator::accumulate1() {
                 } // bead2
                 
                 nR = int(sqrt(rad1)/dR);
-                if (nR < NRADSEP)
-                    radPot(nR) += totV;
+                if (nR < NRADSEP) {
+                    externalPositions.push_back(r1);
+                    interactionTotals.push_back(totV);
+                    radialBins.push_back(nR);
+                }
             } // found1
         } // bead1
     } // slice
+
+    externalValues.resize(externalPositions.size());
+    actionPtr->externalPtr->V(externalPositions.data(), externalValues.data(),
+            static_cast<int>(externalPositions.size()));
+    for (std::size_t i = 0; i < externalValues.size(); ++i)
+        radPot(radialBins[i]) += interactionTotals[i] + externalValues[i];
 
     radPot /= (1.0*numFound1);
     estimator += radPot;

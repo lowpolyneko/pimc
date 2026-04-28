@@ -12,6 +12,8 @@
 #include "cmc.h"
 #include "communicator.h"
 
+#include <vector>
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // CLASSICAL MONTE CARLO CLASS -----------------------------------------------
@@ -71,8 +73,15 @@ double ClassicalMonteCarlo::getTotalEnergy()
 {
     double locEnergy = 0.0;
     sep = dVec{};
+
+    std::vector<dVec> externalPositions(numParticles);
+    std::vector<double> externalValues(numParticles);
+    for (int part1 = 0; part1 < numParticles; part1++)
+        externalPositions[part1] = config(part1);
+    externalPtr->V(externalPositions.data(), externalValues.data(), numParticles);
+
     for (int part1 = 0; part1 < numParticles; part1++) {
-        locEnergy += externalPtr->V(config(part1));
+        locEnergy += externalValues[part1];
 
         for (int part2 = part1+1; part2 < numParticles; part2++) {
             sep = config(part1)-config(part2);
