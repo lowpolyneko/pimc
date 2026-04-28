@@ -333,10 +333,24 @@ target_link_options(${exe} PRIVATE ${GPU_LINK_FLAGS})
 # Link libraries
 target_link_libraries (${exe} ${Boost_LIBRARIES} )
 
+set(POTENTIAL_BENCHMARK_SRC ${PIMC_SRC})
+list(REMOVE_ITEM POTENTIAL_BENCHMARK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/pdrive.cpp")
+add_executable(potential_benchmark.e
+    ${POTENTIAL_BENCHMARK_SRC}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmarks/potential_benchmark.cpp)
+target_include_directories(potential_benchmark.e PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    PRIVATE src)
+target_compile_options(potential_benchmark.e PRIVATE ${GPU_COMPILE_FLAGS})
+target_link_options(potential_benchmark.e PRIVATE ${GPU_LINK_FLAGS})
+target_link_libraries(potential_benchmark.e ${Boost_LIBRARIES})
+
 # Link filesystem library -lstdc++fs for old compilers
 if ((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") AND (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0))
     message("Linking filesystem libraries -lstdc++fs for older compilers")
     target_link_libraries(${exe} stdc++fs)
+    target_link_libraries(potential_benchmark.e stdc++fs)
 endif()
 
 # 'make install' to the correct locations (provided by GNUInstallDirs).
