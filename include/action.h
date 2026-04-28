@@ -160,6 +160,7 @@ class LocalAction : public ActionBase {
         /* The potential action */
         double potentialAction ();
         double potentialAction (const beadLocator &);
+        double potentialAction (const beadLocator &, const beadLocator &);
 
         /* The bare potential action and its correction */
         double barePotentialAction (const beadLocator &);
@@ -215,6 +216,7 @@ class LocalAction : public ActionBase {
         /* The full potential with the NN lookup table for a single bead and all
          * beads at a single time slice. */
         double Vnn(const beadLocator&);
+        double Vnn(const beadLocator&, double);
         double Vnn(const int);
 
         /* The bare potential action for a trajectory */

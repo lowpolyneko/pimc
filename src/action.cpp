@@ -442,6 +442,59 @@ double LocalAction::potentialAction (const beadLocator &beadIndex) {
 }
 
 /**************************************************************************//**
+ *  Return the potential action for a connected range of beads.
+ *
+ *  This batches the external potential over the whole bead range while keeping
+ *  the existing nearest-neighbor interaction and correction calculations.
+******************************************************************************/
+double LocalAction::potentialAction (const beadLocator &startBead,
+        const beadLocator &endBead) {
+
+    std::vector<beadLocator> activeBeads;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
+
+    beadLocator beadIndex = startBead;
+    do {
+        if (path.worm.beadOn(beadIndex)) {
+            activeBeads.push_back(beadIndex);
+            const beadState state = path.worm.getState(beadIndex);
+            externalPositions.push_back(path(beadIndex));
+            externalFactors.push_back(path.worm.factor(state));
+        }
+        beadIndex = path.next(beadIndex);
+    } while (!all(beadIndex, path.next(endBead)));
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+
+    double totU = 0.0;
+    for (std::size_t i = 0; i < activeBeads.size(); ++i) {
+        const beadLocator& bead = activeBeads[i];
+        eo = (bead[0] % 2);
+
+        double bareU = VFactor[eo] * tau() *
+            Vnn(bead, externalFactors[i] * externalValues[i]);
+        double corU = 0.0;
+
+        if ((shift == 1) && (gradVFactor[eo] > EPS))
+            corU = gradVFactor[eo] * tau() * tau() * tau() *
+                constants()->lambda() * gradVnnSquared(bead);
+
+#if PIGS
+        if ((bead[0] == 0) || (bead[0] == (constants()->numTimeSlices() - 1))) {
+            bareU *= 0.5 * endFactor;
+            bareU -= log(waveFunctionPtr->PsiTrial(bead[0]));
+        }
+#endif
+
+        totU += bareU + corU;
+    }
+
+    return totU;
+}
+
+/**************************************************************************//**
  *  Return the bare potential action for a single bead indexed with beadIndex.  
  *
  *  This action corresponds to the primitive approximation and may be used
@@ -794,14 +847,10 @@ double LocalAction::V(const int slice, const double maxR) {
 ******************************************************************************/
 double LocalAction::Vnn(const beadLocator &bead1) {
 
-    double totVint = 0.0;
     double totVext = 0.0;
 
     /* We only continue if bead1 is turned on */
     if (path.worm.beadOn(bead1)) {
-
-        /* Fill up th nearest neighbor list */
-        lookup.updateInteractionList(path,bead1);
 
         /* Get the state of bead 1 */
         beadState state1 = path.worm.getState(bead1);
@@ -809,11 +858,25 @@ double LocalAction::Vnn(const beadLocator &bead1) {
         /* Evaluate the external potential */
         totVext = path.worm.factor(state1)*externalPtr->V(path(bead1));
 
-        /* Sum the interaction potential over all NN beads */
-        for (int n = 0; n < lookup.numBeads; n++) {
-            totVint += path.worm.factor(state1,lookup.beadList(n)) 
-                * interactionPtr->V(lookup.beadSep(n));
-        }
+        return Vnn(bead1, totVext);
+    }
+    return 0.0;
+}
+
+double LocalAction::Vnn(const beadLocator &bead1, double totVext) {
+
+    double totVint = 0.0;
+
+    /* We only continue if bead1 is turned on */
+    if (!path.worm.beadOn(bead1))
+        return 0.0;
+
+    /* Sum the interaction potential over all NN beads */
+    lookup.updateInteractionList(path,bead1);
+    beadState state1 = path.worm.getState(bead1);
+    for (int n = 0; n < lookup.numBeads; n++) {
+        totVint += path.worm.factor(state1,lookup.beadList(n)) 
+            * interactionPtr->V(lookup.beadSep(n));
     }
     return ( totVext + totVint );
 }
@@ -1656,8 +1719,14 @@ double NonLocalAction::potentialAction (const beadLocator &bead1) {
     if ( all(nextBead1, inactiveBead) || (!path.worm.beadOn(nextBead1)) )
         return totU;
 
-    /* Evaluate the external potential */
-    double totVext = externalPtr->V(path(bead1))+externalPtr->V(path(nextBead1));
+    /* Evaluate the external potential on the link endpoints as one batch. */
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalValues;
+    externalPositions.reserve(2);
+    externalPositions.push_back(path(bead1));
+    externalPositions.push_back(path(nextBead1));
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    double totVext = externalValues[0] + externalValues[1];
 
     /* Check if neighboring beads vector needs to grow */
     // Note: commented out code showing intent.

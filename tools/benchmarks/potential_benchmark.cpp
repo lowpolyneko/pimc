@@ -479,6 +479,12 @@ int main(int argc, char* argv[])
                     static_cast<int>(i % constants()->numTimeSlices()));
             return value[0] + value[1];
         });
+
+        beadLocator startBead = {0, 0};
+        beadLocator endBead = {constants()->numTimeSlices() - 1, 0};
+        runTimed("actionU(range)", bench.iterations, [&](std::size_t) {
+            return action->potentialAction(startBead, endBead);
+        });
     }
 
     return EXIT_SUCCESS;

@@ -5573,12 +5573,9 @@ void GPPotential::V(const dVec* positions, double* values, int count) {
         return;
 
 #ifdef USE_GPU
-    std::vector<double> flatPositions(NDIM * count);
-    for (int i = 0; i < count; ++i) {
-        for (int dim = 0; dim < NDIM; ++dim)
-            flatPositions[NDIM * i + dim] = positions[i][dim];
-    }
-    gpuV(flatPositions.data(), values, count);
+    static_assert(sizeof(dVec) == sizeof(double) * NDIM,
+            "GPPotential batched GPU path requires contiguous dVec storage.");
+    gpuV(reinterpret_cast<const double*>(positions), values, count);
 #else
     PotentialBase::V(positions, values, count);
 #endif
