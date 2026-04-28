@@ -2134,7 +2134,6 @@ class GPPotential: public PotentialBase  {
 #ifdef USE_GPU
         gpu_stream_t gpStream;
         double *d_trainx = nullptr;
-        double *d_prod = nullptr;
         double *d_positions = nullptr;
         double *d_values = nullptr;
         int gpuBufferCapacity = 0;

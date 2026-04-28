@@ -5360,18 +5360,18 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
 #ifdef USE_GPU
     GPU_ASSERT(gpu_stream_create(gpStream));
 
-    std::vector<double> flatTrainx(4 * numPoints);
+    constexpr double gpOutputScale = 814.69663559;
+    std::vector<double> flatGpuData(4 * numPoints);
     for (int i = 0; i < numPoints; ++i) {
-        for (int j = 0; j < 4; ++j)
-            flatTrainx[4 * i + j] = trainx(i)[j];
+        flatGpuData[4 * i + 0] = trainx(i)[0];
+        flatGpuData[4 * i + 1] = trainx(i)[1];
+        flatGpuData[4 * i + 2] = trainx(i)[2];
+        flatGpuData[4 * i + 3] = gpOutputScale * prod(i);
     }
 
-    GPU_ASSERT(gpu_malloc_device(double, d_trainx, flatTrainx.size(), gpStream));
-    GPU_ASSERT(gpu_malloc_device(double, d_prod, numPoints, gpStream));
-    GPU_ASSERT(gpu_memcpy_host_to_device(d_trainx, flatTrainx.data(),
-                sizeof(double) * flatTrainx.size(), gpStream));
-    GPU_ASSERT(gpu_memcpy_host_to_device(d_prod, prod.data(),
-                sizeof(double) * numPoints, gpStream));
+    GPU_ASSERT(gpu_malloc_device(double, d_trainx, flatGpuData.size(), gpStream));
+    GPU_ASSERT(gpu_memcpy_host_to_device(d_trainx, flatGpuData.data(),
+                sizeof(double) * flatGpuData.size(), gpStream));
     GPU_ASSERT(gpu_wait(gpStream));
 #endif
 }
@@ -5383,8 +5383,6 @@ GPPotential::~GPPotential() {
 #ifdef USE_GPU
     if (d_trainx)
         GPU_ASSERT(gpu_free(d_trainx, gpStream));
-    if (d_prod)
-        GPU_ASSERT(gpu_free(d_prod, gpStream));
     if (d_positions)
         GPU_ASSERT(gpu_free(d_positions, gpStream));
     if (d_values)
@@ -5415,7 +5413,7 @@ void GPPotential::gpuV(const double* positions, double* values, int count) {
     GPU_ASSERT(gpu_memcpy_host_to_device(d_positions, positions,
                 sizeof(double) * NDIM * count, gpStream));
     gp_potential_gpu_launcher(gpStream, d_values, d_positions, count,
-            d_trainx, d_prod, numPoints);
+            d_trainx, numPoints);
     GPU_ASSERT(gpu_memcpy_device_to_host(values, d_values,
                 sizeof(double) * count, gpStream));
     GPU_ASSERT(gpu_wait(gpStream));
