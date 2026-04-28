@@ -7,14 +7,11 @@ inline void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
         const double* positions, int count, const double* trainx,
         const double* prod, int numPoints)
 {
-    constexpr double xoffset0 = 0.0;
-    constexpr double xoffset1 = 0.0;
+    constexpr int localSize = GPU_BLOCK_SIZE;
     constexpr double xoffset2 = -0.09459459;
-    constexpr double xoffset3 = 0.0;
     constexpr double xscale0 = 7.0;
     constexpr double xscale1 = 3.5;
     constexpr double xscale2 = 7.09459459;
-    constexpr double xscale3 = 1.0;
     constexpr double inv_ell10 = 1.0 / 0.78638807;
     constexpr double inv_ell11 = 1.0 / 2.17270815;
     constexpr double inv_ell12 = 1.0 / 0.77220716;
@@ -44,8 +41,14 @@ inline void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
     constexpr double pi = 3.14159265358979323846;
 
     stream.submit([&](sycl::handler& cgh) {
-        cgh.parallel_for(sycl::range<1>(count), [=](sycl::id<1> idx) {
-            const int i = static_cast<int>(idx[0]);
+        sycl::local_accessor<double, 1> partial(sycl::range<1>(localSize), cgh);
+        cgh.parallel_for(
+                sycl::nd_range<1>(sycl::range<1>(count * localSize),
+                    sycl::range<1>(localSize)),
+                [=](sycl::nd_item<1> item) {
+            const int i = static_cast<int>(item.get_group(0));
+            const int lid = static_cast<int>(item.get_local_id(0));
+
             double x = positions[NDIM * i + 0];
             double y = positions[NDIM * i + 1];
             double z = positions[NDIM * i + 2];
@@ -63,14 +66,14 @@ inline void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
                 finy = y;
             } else {
                 double rotateangle = sycl::fmod(angle, 60.0) - angle;
-                if ((angle + rotateangle) > 30.0) {
-                    rotateangle = rotateangle * pi / 180.0;
+                const double folded = angle + rotateangle;
+                rotateangle = rotateangle * pi / 180.0;
+                if (folded > 30.0) {
                     const double rotatedanglex = sycl::cos(rotateangle) * x - sycl::sin(rotateangle) * y;
                     const double rotatedangley = sycl::sin(rotateangle) * x + sycl::cos(rotateangle) * y;
                     finx = sycl::cos(pi / 3.0) * rotatedanglex + sycl::sin(pi / 3.0) * rotatedangley;
                     finy = sycl::sin(pi / 3.0) * rotatedanglex - sycl::cos(pi / 3.0) * rotatedangley;
                 } else {
-                    rotateangle = rotateangle * pi / 180.0;
                     finx = sycl::cos(rotateangle) * x - sycl::sin(rotateangle) * y;
                     finy = sycl::sin(rotateangle) * x + sycl::cos(rotateangle) * y;
                 }
@@ -78,20 +81,20 @@ inline void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
 
             const double rho = sycl::sqrt(finx * finx + finy * finy);
             if (rho < 3.0 && z < 2.0) {
-                values[i] = 10000.0;
+                if (lid == 0)
+                    values[i] = 10000.0;
                 return;
             }
 
-            const double rp0 = (finx - xoffset0) / xscale0;
-            const double rp1 = (finy - xoffset1) / xscale1;
+            const double rp0 = finx / xscale0;
+            const double rp1 = finy / xscale1;
             const double rp2 = (z - xoffset2) / xscale2;
-            const double rp3 = (1.0 - xoffset3) / xscale3;
+            constexpr int z2 = 1;
 
             double accum = 0.0;
-            for (int k = 0; k < numPoints; ++k) {
+            for (int k = lid; k < numPoints; k += localSize) {
                 const double* tx = trainx + 4 * k;
                 const int z1 = static_cast<int>(tx[3]);
-                const int z2 = static_cast<int>(rp3);
 
                 const double d10 = (tx[0] - rp0) * inv_ell10;
                 const double d11 = (tx[1] - rp1) * inv_ell11;
@@ -111,28 +114,38 @@ inline void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
                 accum += oscale * (k1v + bias * k2v) * prod[k];
             }
 
-            double val_gp = meany + stdy * (mean + accum);
-            const double rnorm = sycl::sqrt(finx * finx + finy * finy + z * z);
-            const double h_long = 1.0 / (1.0 + sycl::exp(-gama * (rnorm - r0)));
-            double value = val_gp;
-            if (rho > 5.0 || z > 6.5) {
-                const double ph0 = sycl::atan2(finy, finx);
-                const double th0 = sycl::acos(z / rnorm);
-                const double tt = sycl::cos(th0);
-                const double fi = ph0;
-                const double normm1 = sycl::sqrt(5.0) / 5.0;
-                const double normm2 = sycl::sqrt(13.0) / 13.0;
-                const double normm3 = 0.1792151994e-4;
-                const double p1 = -x1 / sycl::pow(rnorm, 6.0) - x2 / sycl::pow(rnorm, 8.0) - x3 / sycl::pow(rnorm, 10.0) - x4 / sycl::pow(rnorm, 12.0);
-                const double p2 = -normm1 * (1.5 * tt * tt - 0.5) *
-                    (x5 / sycl::pow(rnorm, 6.0) + x6 / sycl::pow(rnorm, 8.0) + x7 / sycl::pow(rnorm, 10.0) + x8 / sycl::pow(rnorm, 12.0));
-                const double p3 = -normm2 * (3.0 / 8.0 + 35.0 / 8.0 * sycl::pow(tt, 4.0) - 15.0 / 4.0 * tt * tt);
-                const double p4 = x9 / sycl::pow(rnorm, 8.0) + x10 / sycl::pow(rnorm, 10.0) + x11 / sycl::pow(rnorm, 12.0);
-                const double p5 = -normm3 * 10395.0 * sycl::pow(1.0 - tt * tt, 3.0) * sycl::cos(6.0 * fi) * x12 / sycl::pow(rnorm, 10.0);
-                const double vdw = p1 + p2 + p3 * p4 + p5;
-                value = (1.0 - h_long) * val_gp + h_long * vdw;
+            partial[lid] = accum;
+            item.barrier(sycl::access::fence_space::local_space);
+
+            for (int stride = localSize / 2; stride > 0; stride >>= 1) {
+                if (lid < stride)
+                    partial[lid] += partial[lid + stride];
+                item.barrier(sycl::access::fence_space::local_space);
             }
-            values[i] = value / 0.695;
+
+            if (lid == 0) {
+                const double val_gp = meany + stdy * (mean + partial[0]);
+                const double rnorm = sycl::sqrt(finx * finx + finy * finy + z * z);
+                const double h_long = 1.0 / (1.0 + sycl::exp(-gama * (rnorm - r0)));
+                double value = val_gp;
+                if (rho > 5.0 || z > 6.5) {
+                    const double ph0 = sycl::atan2(finy, finx);
+                    const double th0 = sycl::acos(z / rnorm);
+                    const double tt = sycl::cos(th0);
+                    const double normm1 = sycl::sqrt(5.0) / 5.0;
+                    const double normm2 = sycl::sqrt(13.0) / 13.0;
+                    const double normm3 = 0.1792151994e-4;
+                    const double p1 = -x1 / sycl::pow(rnorm, 6.0) - x2 / sycl::pow(rnorm, 8.0) - x3 / sycl::pow(rnorm, 10.0) - x4 / sycl::pow(rnorm, 12.0);
+                    const double p2 = -normm1 * (1.5 * tt * tt - 0.5) *
+                        (x5 / sycl::pow(rnorm, 6.0) + x6 / sycl::pow(rnorm, 8.0) + x7 / sycl::pow(rnorm, 10.0) + x8 / sycl::pow(rnorm, 12.0));
+                    const double p3 = -normm2 * (3.0 / 8.0 + 35.0 / 8.0 * sycl::pow(tt, 4.0) - 15.0 / 4.0 * tt * tt);
+                    const double p4 = x9 / sycl::pow(rnorm, 8.0) + x10 / sycl::pow(rnorm, 10.0) + x11 / sycl::pow(rnorm, 12.0);
+                    const double p5 = -normm3 * 10395.0 * sycl::pow(1.0 - tt * tt, 3.0) * sycl::cos(6.0 * ph0) * x12 / sycl::pow(rnorm, 10.0);
+                    const double vdw = p1 + p2 + p3 * p4 + p5;
+                    value = (1.0 - h_long) * val_gp + h_long * vdw;
+                }
+                values[i] = value / 0.695;
+            }
         });
     });
 }

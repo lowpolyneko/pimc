@@ -2135,6 +2135,9 @@ class GPPotential: public PotentialBase  {
         gpu_stream_t gpStream;
         double *d_trainx = nullptr;
         double *d_prod = nullptr;
+        double *d_positions = nullptr;
+        double *d_values = nullptr;
+        int gpuBufferCapacity = 0;
 #endif
 
 	double matern_kernel(const double*, const double*, const std::array<double,3>);

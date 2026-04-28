@@ -5385,6 +5385,10 @@ GPPotential::~GPPotential() {
         GPU_ASSERT(gpu_free(d_trainx, gpStream));
     if (d_prod)
         GPU_ASSERT(gpu_free(d_prod, gpStream));
+    if (d_positions)
+        GPU_ASSERT(gpu_free(d_positions, gpStream));
+    if (d_values)
+        GPU_ASSERT(gpu_free(d_values, gpStream));
     GPU_ASSERT(gpu_wait(gpStream));
     GPU_ASSERT(gpu_stream_destroy(gpStream));
 #endif
@@ -5397,19 +5401,23 @@ void GPPotential::gpuV(const double* positions, double* values, int count) {
     if (count == 0)
         return;
 
-    double *d_positions = nullptr;
-    double *d_values = nullptr;
-    GPU_ASSERT(gpu_malloc_device(double, d_positions, NDIM * count, gpStream));
-    GPU_ASSERT(gpu_malloc_device(double, d_values, count, gpStream));
+    if (count > gpuBufferCapacity) {
+        if (d_positions)
+            GPU_ASSERT(gpu_free(d_positions, gpStream));
+        if (d_values)
+            GPU_ASSERT(gpu_free(d_values, gpStream));
+        GPU_ASSERT(gpu_wait(gpStream));
+        GPU_ASSERT(gpu_malloc_device(double, d_positions, NDIM * count, gpStream));
+        GPU_ASSERT(gpu_malloc_device(double, d_values, count, gpStream));
+        gpuBufferCapacity = count;
+    }
+
     GPU_ASSERT(gpu_memcpy_host_to_device(d_positions, positions,
                 sizeof(double) * NDIM * count, gpStream));
     gp_potential_gpu_launcher(gpStream, d_values, d_positions, count,
             d_trainx, d_prod, numPoints);
     GPU_ASSERT(gpu_memcpy_device_to_host(values, d_values,
                 sizeof(double) * count, gpStream));
-    GPU_ASSERT(gpu_wait(gpStream));
-    GPU_ASSERT(gpu_free(d_positions, gpStream));
-    GPU_ASSERT(gpu_free(d_values, gpStream));
     GPU_ASSERT(gpu_wait(gpStream));
 }
 #endif
