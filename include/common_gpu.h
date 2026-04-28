@@ -80,7 +80,7 @@
             #error "GPU_BLOCK_SIZE must be >= 2*SUB_GROUP_SIZE"
         #endif 
         typedef sycl::queue gpu_stream_t;
-        #define gpu_stream_create(x) x = sycl::queue()
+        #define gpu_stream_create(x) x = sycl::queue(sycl::property::queue::in_order())
         #define gpu_stream_destroy(x) do {} while(0)
         #define gpu_malloc_device(T, x, y, z) x = sycl::malloc_device< T >( y, z )
         #define gpu_memcpy_host_to_device(w, x, y, z) z.memcpy(w, x, y)
