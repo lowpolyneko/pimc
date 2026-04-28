@@ -395,6 +395,8 @@ void Setup::initParameters() {
     params.add<double>("poisson","Poisson's ratio for graphene",oClass,0.165);
     params.add<double>("carbon_carbon_dist,A","Carbon-Carbon distance for graphene",oClass,1.42);
     params.add<std::string>("graphenelut3d_file_prefix","GrapheneLUT3D file prefix <prefix>serialized.{dat|txt}",oClass,"");
+    params.add<std::string>("gp_training_file","GPPotential binary training vectors file",oClass,"testdata.dat");
+    params.add<std::string>("gp_coefficient_file","GPPotential binary coefficient vector file",oClass,"proddata.dat");
 
     /* Initialize the physical options */
     oClass = "physical";

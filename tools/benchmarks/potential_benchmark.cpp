@@ -241,10 +241,15 @@ int main(int argc, char* argv[])
     setup.setConstants();
 
     std::unique_ptr<PotentialBase> potential;
-    if (bench.kind == "interaction")
-        potential.reset(setup.interactionPotential());
-    else
-        potential.reset(setup.externalPotential());
+    try {
+        if (bench.kind == "interaction")
+            potential.reset(setup.interactionPotential());
+        else
+            potential.reset(setup.externalPotential());
+    } catch (const std::exception& ex) {
+        std::cerr << "error: " << ex.what() << std::endl;
+        return EXIT_FAILURE;
+    }
 
     if (!potential) {
         std::cerr << "error: failed to create " << bench.kind
