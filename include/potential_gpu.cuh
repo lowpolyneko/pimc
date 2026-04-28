@@ -4,7 +4,6 @@
 #include "common_gpu.h"
 
 void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
-        const double* positions, int count, const double* gpdata,
-        int numPoints);
+        const double* positions, int count, const double* gpdata, int numPoints);
 
 #endif

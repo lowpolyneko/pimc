@@ -32,8 +32,7 @@ __global__ void gp_potential_kernel(double* values, const double* positions,
 }
 
 void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
-        const double* positions, int count, const double* gpdata,
-        int numPoints)
+        const double* positions, int count, const double* gpdata, int numPoints)
 {
     const int threads = GPU_BLOCK_SIZE;
     const int blocks = count;

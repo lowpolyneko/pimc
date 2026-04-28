@@ -5399,6 +5399,18 @@ void GPPotential::gpuV(const double* positions, double* values, int count) {
     if (count == 0)
         return;
 
+#if GP_GPU_CPU_FALLBACK_MAX_COUNT > 0
+    if (count <= GP_GPU_CPU_FALLBACK_MAX_COUNT) {
+        for (int i = 0; i < count; ++i) {
+            dVec r;
+            for (int dim = 0; dim < NDIM; ++dim)
+                r[dim] = positions[NDIM * i + dim];
+            values[i] = V(r);
+        }
+        return;
+    }
+#endif
+
     if (count > gpuBufferCapacity) {
         if (d_positions)
             GPU_ASSERT(gpu_free(d_positions, gpStream));
@@ -5428,9 +5440,6 @@ void GPPotential::gpuV(const double* positions, double* values, int count) {
  *  @return GP-evaluated potential for Benzene-Helium
 ******************************************************************************/
 double GPPotential::V(const dVec &r) {
-    
-    DynamicArray<double,1> kvec; 
-    kvec.resize(numPoints);
     //Rotate the point 
     double x = r[0];
     double y = r[1];
@@ -5481,16 +5490,17 @@ double GPPotential::V(const dVec &r) {
     //for (int i = 0; i < 4; i++) {
     //    new_nrm(i) = (rp(i) - xoffset[i])/xscale[i];
     //}
-    //Construct the k-vector   
+    // Accumulate k-vector dot product directly to avoid per-call temporary allocation.
+    double kernelDot = 0.0;
     for (int k =0; k < numPoints; k++) {
 	const double* kpr = &trainx(k)[0];
-        kvec(k) = kernel(kpr,newnrmptr);
+        kernelDot += kernel(kpr,newnrmptr) * prod(k);
         //for (int i = 0; i < 4; i++) {
-            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << "," << kvec(k) << std::endl;
+            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << std::endl;
         //}
     }   
     //Obtain the inference 
-    double val_gp = mean + dot(kvec,prod);
+    double val_gp = mean + kernelDot;
     //std::cout<<x<<","<<y<<","<<z<<std::endl;
     //for (int k = 0; k < numPoints; k++) {
     //	std::cout<<kvec(k)<<","<<prod(k)<<","<<std::endl;

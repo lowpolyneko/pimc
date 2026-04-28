@@ -4,8 +4,7 @@
 #include "common_gpu.h"
 
 inline void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
-        const double* positions, int count, const double* gpdata,
-        int numPoints)
+        const double* positions, int count, const double* gpdata, int numPoints)
 {
     constexpr int localSize = GPU_BLOCK_SIZE;
     constexpr double xoffset2 = -0.09459459;

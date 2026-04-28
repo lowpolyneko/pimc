@@ -25,6 +25,10 @@
     #ifndef MAX_GPU_STREAMS
         #define MAX_GPU_STREAMS 1 ///< Max number of concurrent GPU streams
     #endif
+
+    #ifndef GP_GPU_CPU_FALLBACK_MAX_COUNT
+        #define GP_GPU_CPU_FALLBACK_MAX_COUNT 1 ///< Use scalar CPU evaluation for very small GP batches
+    #endif
     #ifdef USE_HIP
         #include "hip/hip_runtime.h"
         #define GPU_ASSERT(x) (assert((x)==hipSuccess))
