@@ -15,6 +15,8 @@
 #include <boost/math/special_functions/ellint_1.hpp>
 #include <boost/math/special_functions/ellint_2.hpp>
 
+#include <stdexcept>
+
 /**************************************************************************//**
  * Creating and Registering New Potentials
 ******************************************************************************/
@@ -87,7 +89,7 @@ REGISTER_EXTERNAL_POTENTIAL(        "graphenelut3d",         GrapheneLUT3DPotent
 REGISTER_EXTERNAL_POTENTIAL("graphenelut3dgenerate", GrapheneLUT3DPotentialGenerate, GET_SETUP(), setup.params["strain"].as<double>(), setup.params["poisson"].as<double>(), setup.params["carbon_carbon_dist"].as<double>(), setup.params["lj_sigma"].as<double>(), setup.params["lj_epsilon"].as<double>(), setup.params["k_max"].as<int>(), setup.params["xres"].as<int>(), setup.params["yres"].as<int>(), setup.params["zres"].as<int>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("LeeBenzene2003", LeeBenzenePotential, GET_SETUP(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("ShirkovBenzene2024", ShirkovBenzene, GET_SETUP(), setup.get_cell())
-REGISTER_EXTERNAL_POTENTIAL("GPPotential", GPPotential, GET_SETUP(), setup.get_cell())
+REGISTER_EXTERNAL_POTENTIAL("GPPotential", GPPotential, GET_SETUP(), setup.get_cell(), setup.params["gp_training_file"].as<std::string>(), setup.params["gp_coefficient_file"].as<std::string>())
 #endif
 
 // ---------------------------------------------------------------------------
@@ -5270,7 +5272,8 @@ double ShirkovBenzene::V(const dVec &r) {
 /**************************************************************************//**
  * Constructor.
 ******************************************************************************/
-GPPotential::GPPotential (const Container *_boxPtr) : PotentialBase() {
+GPPotential::GPPotential (const Container *_boxPtr, const std::string &_trainingFile,
+        const std::string &_coefficientFile) : PotentialBase() {
 
     boxPtr = _boxPtr;
 
@@ -5285,7 +5288,7 @@ GPPotential::GPPotential (const Container *_boxPtr) : PotentialBase() {
     /* Inverse width of the wall onset */
     invWallWidth = 20.0;
 
-    /* Fixed positions of FILENAME */
+    /* Load normalized GP training vectors. */
     std::array<double,4> xpoint;               // The loaded position, the first number is the type of atom.
 
     numPoints = 0;
@@ -5294,12 +5297,15 @@ GPPotential::GPPotential (const Container *_boxPtr) : PotentialBase() {
     int p = 0;
     int total = 0;
     int j = 0;
-    std::ifstream fin("testdata.dat", std::ios::binary);
+    std::ifstream fin(_trainingFile, std::ios::binary);
+    if (!fin) {
+        throw std::runtime_error("Could not open GPPotential training file: " + _trainingFile);
+    }
     while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
 	j = total % 4;
 	xpoint[j] = tempval;
 	total++;
-	if ((total+1) % 4 == 0) {
+	if (total % 4 == 0) {
 	    numPoints++;	
 	    if (numPoints >= int(trainx.size()))
             	trainx.resizeAndPreserve(numPoints);
@@ -5309,25 +5315,39 @@ GPPotential::GPPotential (const Container *_boxPtr) : PotentialBase() {
 	}
     }
     fin.close();
-    std::cout << numPoints << std::endl;
+    if ((total % 4) != 0) {
+        throw std::runtime_error("GPPotential training file does not contain a whole number of 4-double records: " + _trainingFile);
+    }
+    if (numPoints == 0) {
+        throw std::runtime_error("GPPotential training file is empty: " + _trainingFile);
+    }
     trainx.resizeAndPreserve(numPoints);   
     
-    /* We start with an array of size 500 */
-    numPoints = 0;
+    /* Load the GP coefficient vector. */
+    int numCoefficients = 0;
     p = 0;
     tempval = 0;
     prod.resize(16000);
-    std::ifstream fin2("proddata.dat", std::ios::binary);
+    std::ifstream fin2(_coefficientFile, std::ios::binary);
+    if (!fin2) {
+        throw std::runtime_error("Could not open GPPotential coefficient file: " + _coefficientFile);
+    }
     while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
-        numPoints++;
-        if (numPoints >= int(prod.size()))
-            prod.resizeAndPreserve(numPoints);
+        numCoefficients++;
+        if (numCoefficients >= int(prod.size()))
+            prod.resizeAndPreserve(numCoefficients);
 	prod(p) = tempval;
 	p++;
     }
     fin2.close();
-    std::cout << numPoints << std::endl;
-    prod.resizeAndPreserve(numPoints);   
+    if (numCoefficients == 0) {
+        throw std::runtime_error("GPPotential coefficient file is empty: " + _coefficientFile);
+    }
+    if (numCoefficients != numPoints) {
+        throw std::runtime_error(str(format("GPPotential data size mismatch: %d training points in %s but %d coefficients in %s")
+                    % numPoints % _trainingFile % numCoefficients % _coefficientFile));
+    }
+    prod.resizeAndPreserve(numCoefficients);   
 }
 
 /**************************************************************************//**
@@ -5430,4 +5450,3 @@ double GPPotential::V(const dVec &r) {
     return val;
 }
 #endif
-

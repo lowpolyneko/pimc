@@ -2073,7 +2073,7 @@ inline std::vector<std::vector<double>> ShirkovBenzene::generate_benzene_geometr
 class GPPotential: public PotentialBase  {
 
     public:
-        GPPotential(const Container*);
+        GPPotential(const Container*, const std::string&, const std::string&);
         ~GPPotential();
 
         double V(const dVec &r);
@@ -2189,4 +2189,3 @@ inline double GPPotential::long_range(double x, double y, double z) {
 #endif
 
 #endif // POTENTIAL_H
-
