@@ -4,8 +4,11 @@
 #include "potential.h"
 #include "setup.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 
 namespace {
@@ -19,6 +22,7 @@ struct BenchmarkOptions {
     double minRadius = 0.25;
     double maxRadius = 5.0;
     bool gpu = false;
+    bool checkGpu = false;
     bool list = false;
     bool help = false;
 };
@@ -83,6 +87,8 @@ void printHelp(const char* exe)
         << "  --benchmark-min R                minimum sample radius [0.25]\n"
         << "  --benchmark-max R                maximum sample radius [5.0]\n\n"
         << "  --benchmark-gpu                  use GPPotential batched GPU value path\n\n"
+        << "  --benchmark-check-gpu            compare GPPotential gpuV batches to scalar V\n"
+        << "  --benchmark-tolerance X          relative/absolute check tolerance [1e-9]\n\n"
         << "Any remaining options are passed through the normal PIMC setup parser.\n"
         << "The benchmark supplies defaults for size, temperature, particle count,\n"
         << "time slices, tube radius, and common LJ/Gasparini parameters.\n";
@@ -114,6 +120,39 @@ std::vector<dVec> makeSamples(std::size_t count, double minRadius,
     return samples;
 }
 
+void appendGpuCheckSamples(std::vector<dVec>& samples)
+{
+#if NDIM > 2
+    const double coords[][NDIM] = {
+        {0.1, 0.2, 1.0},
+        {3.1, 0.0, 1.9},
+        {-4.0, 2.5, -3.0},
+        {5.5, 0.25, 6.75},
+        {-6.0, -3.0, 7.5},
+        {0.0, 6.5, -6.6},
+    };
+
+    for (const auto& coord : coords) {
+        dVec r{};
+        for (int d = 0; d < NDIM; ++d)
+            r[d] = coord[d];
+        samples.push_back(r);
+    }
+#else
+    (void)samples;
+#endif
+}
+
+std::vector<double> flattenSamples(const std::vector<dVec>& samples)
+{
+    std::vector<double> flatSamples(samples.size() * NDIM);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        for (int d = 0; d < NDIM; ++d)
+            flatSamples[NDIM * i + d] = samples[i][d];
+    }
+    return flatSamples;
+}
+
 template <typename Func>
 void runTimed(const std::string& label, std::size_t iterations, Func func)
 {
@@ -134,11 +173,83 @@ void runTimed(const std::string& label, std::size_t iterations, Func func)
               << std::endl;
 }
 
+double comparisonScale(double expected)
+{
+    return std::max(1.0, std::fabs(expected));
+}
+
+int checkGpuValues(GPPotential& gp, const std::vector<dVec>& samples,
+        const std::vector<double>& flatSamples, double tolerance)
+{
+    std::vector<double> expected(samples.size());
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        expected[i] = gp.V(samples[i]);
+
+    std::vector<double> actual(samples.size());
+    gp.gpuV(flatSamples.data(), actual.data(), static_cast<int>(samples.size()));
+
+    double maxAbsDiff = 0.0;
+    double maxRelDiff = 0.0;
+    std::size_t worst = 0;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const double absDiff = std::fabs(actual[i] - expected[i]);
+        const double relDiff = absDiff / comparisonScale(expected[i]);
+        if (relDiff > maxRelDiff) {
+            maxRelDiff = relDiff;
+            maxAbsDiff = absDiff;
+            worst = i;
+        }
+        if (absDiff > tolerance && relDiff > tolerance) {
+            std::cerr << "error: gpuV mismatch at sample " << i
+                      << " expected=" << std::setprecision(17) << expected[i]
+                      << " actual=" << std::setprecision(17) << actual[i]
+                      << " abs_diff=" << absDiff
+                      << " rel_diff=" << relDiff
+                      << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
+
+    const std::size_t batchSizes[] = {1, 2, 3, 7, 16, 64, 257};
+    std::vector<double> batchActual(samples.size());
+    for (const auto batchSize : batchSizes) {
+        for (std::size_t begin = 0; begin < samples.size(); begin += batchSize) {
+            const std::size_t n = std::min(batchSize, samples.size() - begin);
+            gp.gpuV(flatSamples.data() + NDIM * begin, batchActual.data() + begin,
+                    static_cast<int>(n));
+        }
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            const double absDiff = std::fabs(batchActual[i] - expected[i]);
+            const double relDiff = absDiff / comparisonScale(expected[i]);
+            if (absDiff > tolerance && relDiff > tolerance) {
+                std::cerr << "error: gpuV mismatch with batch_size=" << batchSize
+                          << " at sample " << i
+                          << " expected=" << std::setprecision(17) << expected[i]
+                          << " actual=" << std::setprecision(17) << batchActual[i]
+                          << " abs_diff=" << absDiff
+                          << " rel_diff=" << relDiff
+                          << std::endl;
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
+    std::cout << "gpu correctness check passed"
+              << " samples=" << samples.size()
+              << " tolerance=" << std::setprecision(3) << tolerance
+              << " max_abs_diff=" << std::setprecision(12) << maxAbsDiff
+              << " max_rel_diff=" << std::setprecision(12) << maxRelDiff
+              << " worst_sample=" << worst
+              << std::endl;
+    return EXIT_SUCCESS;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
 {
     BenchmarkOptions bench;
+    double checkTolerance = 1.0e-9;
     std::vector<std::string> setupArgs;
     setupArgs.push_back(argv[0]);
 
@@ -151,6 +262,9 @@ int main(int argc, char* argv[])
             } else if (arg == "--benchmark-list") {
                 bench.list = true;
             } else if (arg == "--benchmark-gpu") {
+                bench.gpu = true;
+            } else if (arg == "--benchmark-check-gpu") {
+                bench.checkGpu = true;
                 bench.gpu = true;
             } else if (isBenchmarkOption(arg, "--benchmark-kind")) {
                 bench.kind = optionValue(arg, "--benchmark-kind", i, argc, argv);
@@ -166,6 +280,8 @@ int main(int argc, char* argv[])
                 bench.minRadius = std::stod(optionValue(arg, "--benchmark-min", i, argc, argv));
             } else if (isBenchmarkOption(arg, "--benchmark-max")) {
                 bench.maxRadius = std::stod(optionValue(arg, "--benchmark-max", i, argc, argv));
+            } else if (isBenchmarkOption(arg, "--benchmark-tolerance")) {
+                checkTolerance = std::stod(optionValue(arg, "--benchmark-tolerance", i, argc, argv));
             } else {
                 setupArgs.push_back(arg);
             }
@@ -198,7 +314,8 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
     if (bench.iterations == 0 || bench.samples == 0 ||
-            bench.minRadius <= 0.0 || bench.maxRadius <= bench.minRadius) {
+            bench.minRadius <= 0.0 || bench.maxRadius <= bench.minRadius ||
+            checkTolerance <= 0.0 || !std::isfinite(checkTolerance)) {
         std::cerr << "error: invalid benchmark sampling parameters" << std::endl;
         return EXIT_FAILURE;
     }
@@ -261,12 +378,10 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    const auto samples = makeSamples(bench.samples, bench.minRadius, bench.maxRadius);
-    std::vector<double> flatSamples(samples.size() * NDIM);
-    for (std::size_t i = 0; i < samples.size(); ++i) {
-        for (int d = 0; d < NDIM; ++d)
-            flatSamples[NDIM * i + d] = samples[i][d];
-    }
+    auto samples = makeSamples(bench.samples, bench.minRadius, bench.maxRadius);
+    if (bench.checkGpu)
+        appendGpuCheckSamples(samples);
+    const auto flatSamples = flattenSamples(samples);
 
     std::cout << "potential=" << bench.potential
               << " kind=" << bench.kind
@@ -279,6 +394,20 @@ int main(int argc, char* argv[])
               << " gpu=unavailable"
 #endif
               << std::endl;
+
+    if (bench.checkGpu) {
+#ifdef USE_GPU
+        auto* gp = dynamic_cast<GPPotential*>(potential.get());
+        if (!gp) {
+            std::cerr << "error: --benchmark-check-gpu is only supported for GPPotential" << std::endl;
+            return EXIT_FAILURE;
+        }
+        return checkGpuValues(*gp, samples, flatSamples, checkTolerance);
+#else
+        std::cerr << "error: --benchmark-check-gpu requires a GPU-enabled build" << std::endl;
+        return EXIT_FAILURE;
+#endif
+    }
 
     if (bench.method == "value" || bench.method == "all") {
 #ifdef USE_GPU
