@@ -7,6 +7,7 @@
  */
 
 #include "constants.h"
+#include <vector>
 
 #ifndef ACTION_H 
 #define ACTION_H
@@ -47,6 +48,7 @@ class ActionBase {
         /** The effective potential inter-ACTION for various pass conditions. */
         virtual double potentialAction() {return 0.0;}
         virtual double potentialAction (const beadLocator &, const beadLocator &);
+        virtual double potentialAction (const std::vector<beadLocator> &);
         virtual double potentialAction (const beadLocator &) { return 0.0; }
 
         /* The bare potential action and its correction */
@@ -161,6 +163,7 @@ class LocalAction : public ActionBase {
         double potentialAction ();
         double potentialAction (const beadLocator &);
         double potentialAction (const beadLocator &, const beadLocator &);
+        double potentialAction (const std::vector<beadLocator> &);
 
         /* The bare potential action and its correction */
         double barePotentialAction (const beadLocator &);

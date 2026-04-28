@@ -62,6 +62,51 @@ BatchedPotentialStats& batchedPotentialStats()
     return stats;
 }
 
+struct ActionCallStats {
+    long long localScalarCalls = 0;
+    long long localScalarActive = 0;
+    long long localRangeCalls = 0;
+    long long localRangeActive = 0;
+    long long localListCalls = 0;
+    long long localListActive = 0;
+    long long bareScalarCalls = 0;
+    long long bareScalarActive = 0;
+    long long correctionRangeCalls = 0;
+    long long correctionRangeBeads = 0;
+    long long baseRangeCalls = 0;
+    long long baseRangeBeads = 0;
+    long long nonLocalScalarCalls = 0;
+    long long nonLocalScalarActive = 0;
+
+    ~ActionCallStats()
+    {
+        if (envFlagEnabled("PIMC_ACTION_CALL_STATS")) {
+            std::cerr << "action_call_stats"
+                      << " local_scalar_calls=" << localScalarCalls
+                      << " local_scalar_active=" << localScalarActive
+                      << " local_range_calls=" << localRangeCalls
+                      << " local_range_active=" << localRangeActive
+                      << " local_list_calls=" << localListCalls
+                      << " local_list_active=" << localListActive
+                      << " bare_scalar_calls=" << bareScalarCalls
+                      << " bare_scalar_active=" << bareScalarActive
+                      << " correction_range_calls=" << correctionRangeCalls
+                      << " correction_range_beads=" << correctionRangeBeads
+                      << " base_range_calls=" << baseRangeCalls
+                      << " base_range_beads=" << baseRangeBeads
+                      << " nonlocal_scalar_calls=" << nonLocalScalarCalls
+                      << " nonlocal_scalar_active=" << nonLocalScalarActive
+                      << std::endl;
+        }
+    }
+};
+
+ActionCallStats& actionCallStats()
+{
+    static ActionCallStats stats;
+    return stats;
+}
+
 double comparisonScale(double expected)
 {
     return std::max(1.0, std::abs(expected));
@@ -336,12 +381,24 @@ double ActionBase::potentialAction (const beadLocator &startBead,
         const beadLocator &endBead) {
 
     double totU = 0.0;
+    int numBeads = 0;
     beadLocator beadIndex;
     beadIndex = startBead;
     do {
         totU += potentialAction(beadIndex);
+        ++numBeads;
         beadIndex = path.next(beadIndex);
     } while (!all(beadIndex, path.next(endBead)));
+    actionCallStats().baseRangeCalls += 1;
+    actionCallStats().baseRangeBeads += numBeads;
+    return totU;
+}
+
+double ActionBase::potentialAction (const std::vector<beadLocator> &beads) {
+
+    double totU = 0.0;
+    for (const auto& bead : beads)
+        totU += potentialAction(bead);
     return totU;
 }
 
@@ -419,6 +476,9 @@ double LocalAction::potentialAction (const beadLocator &beadIndex) {
 
     double bareU = 0.0;
     double corU = 0.0;
+    actionCallStats().localScalarCalls += 1;
+    if (path.worm.beadOn(beadIndex))
+        actionCallStats().localScalarActive += 1;
     eo = (beadIndex[0] % 2);
 
     /* We first compute the base potential action piece */
@@ -466,6 +526,59 @@ double LocalAction::potentialAction (const beadLocator &startBead,
         beadIndex = path.next(beadIndex);
     } while (!all(beadIndex, path.next(endBead)));
 
+    actionCallStats().localRangeCalls += 1;
+    actionCallStats().localRangeActive += static_cast<long long>(activeBeads.size());
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+
+    double totU = 0.0;
+    for (std::size_t i = 0; i < activeBeads.size(); ++i) {
+        const beadLocator& bead = activeBeads[i];
+        eo = (bead[0] % 2);
+
+        double bareU = VFactor[eo] * tau() *
+            Vnn(bead, externalFactors[i] * externalValues[i]);
+        double corU = 0.0;
+
+        if ((shift == 1) && (gradVFactor[eo] > EPS))
+            corU = gradVFactor[eo] * tau() * tau() * tau() *
+                constants()->lambda() * gradVnnSquared(bead);
+
+#if PIGS
+        if ((bead[0] == 0) || (bead[0] == (constants()->numTimeSlices() - 1))) {
+            bareU *= 0.5 * endFactor;
+            bareU -= log(waveFunctionPtr->PsiTrial(bead[0]));
+        }
+#endif
+
+        totU += bareU + corU;
+    }
+
+    return totU;
+}
+
+double LocalAction::potentialAction (const std::vector<beadLocator> &beads) {
+
+    std::vector<beadLocator> activeBeads;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
+    activeBeads.reserve(beads.size());
+    externalPositions.reserve(beads.size());
+    externalFactors.reserve(beads.size());
+
+    for (const auto& bead : beads) {
+        if (path.worm.beadOn(bead)) {
+            activeBeads.push_back(bead);
+            const beadState state = path.worm.getState(bead);
+            externalPositions.push_back(path(bead));
+            externalFactors.push_back(path.worm.factor(state));
+        }
+    }
+
+    actionCallStats().localListCalls += 1;
+    actionCallStats().localListActive += static_cast<long long>(activeBeads.size());
+
     evaluateExternalPotential(externalPtr, externalPositions, externalValues);
 
     double totU = 0.0;
@@ -501,6 +614,10 @@ double LocalAction::potentialAction (const beadLocator &startBead,
  *  when attempting updates that use single slice rejection.
 ******************************************************************************/
 double LocalAction::barePotentialAction (const beadLocator &beadIndex) {
+
+    actionCallStats().bareScalarCalls += 1;
+    if (path.worm.beadOn(beadIndex))
+        actionCallStats().bareScalarActive += 1;
 
     double bareU = VFactor[beadIndex[0]%2]*tau()*Vnn(beadIndex);
 
@@ -551,12 +668,17 @@ double LocalAction::potentialActionCorrection (const beadLocator &startBead,
         const beadLocator &endBead) {
 
     double corU = 0.0;
+    int numBeads = 0;
     beadLocator beadIndex;
     beadIndex = startBead;
     do {
         corU += potentialActionCorrection(beadIndex);
+        ++numBeads;
         beadIndex = path.next(beadIndex);
     } while (!all(beadIndex, path.next(endBead)));
+
+    actionCallStats().correctionRangeCalls += 1;
+    actionCallStats().correctionRangeBeads += numBeads;
 
     return corU;
 }
@@ -1695,6 +1817,10 @@ double NonLocalAction::potentialAction () {
  *  @param beadIndex the bead to compute the advanced link action for.
 ******************************************************************************/
 double NonLocalAction::potentialAction (const beadLocator &bead1) {
+
+    actionCallStats().nonLocalScalarCalls += 1;
+    if (path.worm.beadOn(bead1))
+        actionCallStats().nonLocalScalarActive += 1;
 
     /* We only need to calculate the potential action if the two neighboring
      * beads are on */
