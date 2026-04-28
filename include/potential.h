@@ -89,41 +89,154 @@ class PotentialBase {
  * use a 2-point Newton-Gregory spline fit to perform the actual 
  * interpolation.
  */
+template <typename T>
 class TabulatedPotential {
     public:
-        TabulatedPotential();
-        virtual ~TabulatedPotential();
+        /**************************************************************************//**
+         * Constructor.
+        ******************************************************************************/
+        TabulatedPotential() {
+            extV.fill(0.0);
+            extdVdr.fill(0.0);
+            extd2Vdr2.fill(0.0);
+        }
+
+        /**************************************************************************//**
+         * Destructor. 
+        ******************************************************************************/
+        ~TabulatedPotential() {
+        }
 
     protected:
-	DynamicArray <double,1> lookupV;           ///< A potential lookup table
-	DynamicArray <double,1> lookupdVdr;        ///< A lookup table for dVint/dr
-	DynamicArray <double,1> lookupd2Vdr2;      ///< A lookup table for d2Vint/dr2
+        DynamicArray <double,1> lookupV;           ///< A potential lookup table
+        DynamicArray <double,1> lookupdVdr;        ///< A lookup table for dVint/dr
+        DynamicArray <double,1> lookupd2Vdr2;      ///< A lookup table for d2Vint/dr2
 
         double dr;                          ///< The discretization for the lookup table
         int tableLength;                    ///< The number of elements in the lookup table
 
-	std::array<double,2> extV;          ///< Extremal value of V
-	std::array<double,2> extdVdr;       ///< Extremal value of dV/dr
-	std::array<double,2> extd2Vdr2;     ///< Extremal value of d2V/dr2
+        std::array<double,2> extV;          ///< Extremal value of V
+        std::array<double,2> extdVdr;       ///< Extremal value of dV/dr
+        std::array<double,2> extd2Vdr2;     ///< Extremal value of d2V/dr2
 
-        /* Initialize all data structures */
-        void initLookupTable(const double, const double);
+        /**************************************************************************//**
+         *  Given a discretization factor and the system size, create and fill
+         *  the lookup tables for the potential and its derivative.
+        ******************************************************************************/
+        void initLookupTable(const double _dr, const double maxSep) {
 
-        /* Returns the 2-point spline fit to the lookup table */
-        virtual double newtonGregory(const DynamicArray<double,1>&, const std::array<double,2>&, const double);
+            /* We now calculate the lookup tables for the interaction potential and 
+             * its first and second derivatives. */
+            dr = _dr;
+            tableLength = int(maxSep/dr);
+            lookupV.resize(tableLength);
+            lookupdVdr.resize(tableLength);
+            lookupd2Vdr2.resize(tableLength);
+            lookupV.fill(0.0);
+            lookupdVdr.fill(0.0);
+            lookupd2Vdr2.fill(0.0);
 
-        /* Returns a bare lookup value */
-        virtual double direct(const DynamicArray<double,1>&, const std::array<double,2>&, const double);
+            double r = 0;
+
+            for (int n = 0; n < tableLength; n++) {
+                lookupV(n)    = valueV(r);
+                lookupdVdr(n) = valuedVdr(r);
+                lookupd2Vdr2(n) = valued2Vdr2(r);
+                r += dr;
+            }
+
+            /* r = 0.0; */
+            /* for (int n = 0; n < tableLength; n++) { */
+            /*     communicate()->file("debug")->stream() << format("%24.16e %24.16e\n") */
+            /*         % r % lookupV(n); */
+            /*     r += dr; */
+            /* }; */
+
+            /* exit(-1); */
+
+
+            //      std::cout << format("%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E\n") % r % lookupV(n) % valueV(r) % 
+
+            //  double rc = constants()->rc();
+            //  for (int n = 0; n < tableLength; n++) {
+            //      r += dr;
+            //      if (r <= rc) {
+            //          lookupV(n) = valueV(r) - valueV(rc) - valuedVdr(rc)*(r-rc);
+            //          lookupdVdr(n) = valuedVdr(r) - valuedVdr(rc);
+            //      }
+            //      else {
+            //          lookupV(n) = 0.0;
+            //          lookupdVdr(n) = 0.0;
+            //      }
+            //      std::cout << format("%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E\n") % r % lookupV(n) % valueV(r) % 
+            //          lookupdVdr(n) % valuedVdr(r) % (lookupV(n) - valueV(r)) % (lookupdVdr(n) - valuedVdr(r));
+            //  }
+        }
+
+        /**************************************************************************//**
+         *  Use the Newton-Gregory forward difference method to do a 2-point lookup
+         *  on the potential table.  
+         *
+         *  @see M.P. Allen and D.J. Tildesley, "Computer Simulation of Liquids" 
+         *  (Oxford Press, London, England) p 144 (2004).
+        ******************************************************************************/
+        inline double newtonGregory(const DynamicArray<double,1> &VTable, 
+                const std::array<double,2> &extVal, const double r) {
+
+            double rdr = r/dr;
+            int k = int(rdr);
+
+            if (k <= 0) 
+                return extVal[0];
+
+            if (k >= tableLength)
+                return extVal[1];
+
+            double xi = rdr - 1.0*k;
+            double vkm1 = VTable(k-1);
+            double vk = VTable(k);
+            double vkp1 = VTable(k+1);
+
+            double T1 = vkm1 + (vk - vkm1) * xi;
+            double T2 = vk + (vkp1 - vk) * (xi - 1.0);
+
+            return (T1 + 0.5 * (T2 - T1) * xi);
+        }
+
+        /**************************************************************************//**
+         *  Use a direct lookup for the potential table.
+         *
+         *  This is faster thant Newton-Gregory and may give similar results for a fine
+         *  enough mesh.
+        ******************************************************************************/
+        inline double direct(const DynamicArray<double,1> &VTable, 
+                const std::array<double,2> &extVal, const double r) {
+
+            int k = int(r/dr);
+            if (k <= 0) 
+                return extVal[0];
+
+            if (k >= tableLength)
+                return extVal[1];
+
+            return VTable(k);
+        }
+
 
         /** The functional value of V */
-        virtual double valueV (const double) = 0;               
-        
+        inline double valueV (const double r) {
+            return static_cast<T*>(this)->valueV(r);
+        }
+
         /** The functional value of dV/dr */
-        virtual double valuedVdr (const double) = 0;
+        inline double valuedVdr (const double r) {
+            return static_cast<T*>(this)->valuedVdr(r);
+        }
 
         /** The functional value of d2V/dr2 */
-        virtual double valued2Vdr2 (const double) = 0;                  
-    
+        inline double valued2Vdr2 (const double r) {
+            return static_cast<T*>(this)->valued2Vdr2(r);
+        }
 };
 
 // ========================================================================  
@@ -537,7 +650,7 @@ class HardCylinderPotential : public PotentialBase {
  * Computes the value of the external wall potential for a plated cylindrical 
  * cavity. 
  */
-class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotential {
+class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotential<PlatedLJCylinderPotential> {
     public:
         PlatedLJCylinderPotential (const double, const double, const double, const double, const double);
         ~PlatedLJCylinderPotential ();
@@ -560,6 +673,11 @@ class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotentia
         /** Initial configuration corresponding to the LJ cylinder potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
 
+        /* Used to construct the lookup tables */
+        double valueV (const double);               
+        double valuedVdr (const double);                
+        double valued2Vdr2 (const double);
+
     private:
         /** local methods for computing the potential of a LJ cylinder */
         double V_ (const double, const double, const double, const double, const double);
@@ -578,11 +696,6 @@ class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotentia
         double dR;      // Discretization for the lookup table
 
         double minV;    // The minimum value of the potential
-
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                
-        double valued2Vdr2 (const double);
 };
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -634,7 +747,7 @@ inline double PlatedLJCylinderPotential::grad2V(const dVec &r) {
  * Computes the value of the external wall potential for a cylindrical 
  * cavity. 
  */
-class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
+class LJCylinderPotential : public PotentialBase, public TabulatedPotential<LJCylinderPotential> {
     public:
         LJCylinderPotential (const double, const double, const double, const double);
         ~LJCylinderPotential ();
@@ -657,6 +770,11 @@ class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
         /** Initial configuration corresponding to the LJ cylinder potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
 
+        /* Used to construct the lookup tables */
+        double valueV (const double);               
+        double valuedVdr (const double);                
+        double valued2Vdr2 (const double);
+
     private:
         /* All the parameters needed for the LJ wall potential */
         double density;
@@ -667,11 +785,6 @@ class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
         double dR;      // Discretization for the lookup table
 
         double minV;    // The minimum value of the potential
-
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                
-        double valued2Vdr2 (const double);
 };
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -780,7 +893,7 @@ class LJHourGlassPotential : public PotentialBase {
  * Computes the value of the semi-empircal Aziz potential that is known
  * to be accurate for He-4.
  */
-class AzizPotential : public PotentialBase, public TabulatedPotential {
+class AzizPotential : public PotentialBase, public TabulatedPotential<AzizPotential> {
     public:
         AzizPotential (const int, const Container *);
         ~AzizPotential ();
@@ -794,14 +907,14 @@ class AzizPotential : public PotentialBase, public TabulatedPotential {
         /* The Laplacian of the Aziz potential */
         double grad2V(const dVec &);
 
-    private:
-        /* All the parameters of the Aziz potential */
-        double rm, A, epsilon, alpha, beta, D, C6, C8, C10;
-
         /* Used to construct the lookup tables */
         double valueV (const double);               
         double valuedVdr (const double);                    
         double valued2Vdr2 (const double);
+
+    private:
+        /* All the parameters of the Aziz potential */
+        double rm, A, epsilon, alpha, beta, D, C6, C8, C10;
 
         /* The F-function needed for the Aziz potential */
         double F(const double x) {
@@ -871,7 +984,7 @@ inline double AzizPotential::grad2V(const dVec &r) {
 // Hydrogen Potential Class
 // ========================================================================
 
-class H2LJ : public PotentialBase, public TabulatedPotential
+class H2LJ : public PotentialBase, public TabulatedPotential<H2LJ>
 {
      public:
          H2LJ (const Container *);
@@ -886,15 +999,14 @@ class H2LJ : public PotentialBase, public TabulatedPotential
          /* The Laplacian of the Lennard-Jones potential */
          double grad2V(const dVec &);
 
-     private:
-         /* All the parameters of the Lennard Jones potential */
-         double EPSILON, SIGMA;
-
          /* Used to construct the lookup tables */
          double valueV (const double);
          double valuedVdr (const double);
          double valued2Vdr2 (const double);
 
+     private:
+         /* All the parameters of the Lennard Jones potential */
+         double EPSILON, SIGMA;
  };
 
 
@@ -927,7 +1039,7 @@ class H2LJ : public PotentialBase, public TabulatedPotential
  // See: I.F. Silvera and V.V. Goldman, J. Chem. Phys. 69, 4209 (1978).
  // This implementation includes the effective Axilrod-Teller interactions.
 
- class SilveraPotential : public PotentialBase, public TabulatedPotential {
+ class SilveraPotential : public PotentialBase, public TabulatedPotential<SilveraPotential> {
      public:
          SilveraPotential (const Container *);
          ~SilveraPotential ();
@@ -941,15 +1053,15 @@ class H2LJ : public PotentialBase, public TabulatedPotential
          /* The Laplacian of the Aziz potential */
          double grad2V(const dVec &);
 
-     private:
-         /* All the parameters of the Silvera-Goldman potential */
-         double ALPHA, BETA, GAMMA, C6, C8, C9, C10, Rc;
-         double BohrPerAngstrom, KelvinPerHartree;
-
          /* Used to construct the lookup tables */
          double valueV (const double);
          double valuedVdr (const double);
          double valued2Vdr2 (const double);
+
+     private:
+         /* All the parameters of the Silvera-Goldman potential */
+         double ALPHA, BETA, GAMMA, C6, C8, C9, C10, Rc;
+         double BohrPerAngstrom, KelvinPerHartree;
 
          // The damping function needed for the Silvera-Golman potential.
          // The argument must be in units of Bohr radii.
@@ -1072,7 +1184,7 @@ class H2LJ : public PotentialBase, public TabulatedPotential
  * Computes the value of the semi-empircal Szalewicz potential that is known
  * to be accurate for He-4.
  */
-class SzalewiczPotential : public PotentialBase, public TabulatedPotential {
+class SzalewiczPotential : public PotentialBase, public TabulatedPotential<SzalewiczPotential> {
     public:
         SzalewiczPotential (const Container *);
         ~SzalewiczPotential ();
@@ -1085,6 +1197,11 @@ class SzalewiczPotential : public PotentialBase, public TabulatedPotential {
 
         /* The Laplacian of the Szalewicz potential */
         double grad2V(const dVec &);
+
+        /* Used to construct the lookup tables */
+        double valueV (const double);               
+        double valuedVdr (const double);                    
+        double valued2Vdr2 (const double);
 
     private:
         /* All the parameters of the Szalewicz potential */
@@ -1129,10 +1246,6 @@ class SzalewiczPotential : public PotentialBase, public TabulatedPotential {
                                         87178291200,
                                         1307674368000,
                                         20922789888000};
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                    
-        double valued2Vdr2 (const double);
 
         /* The Tang-Toennies damping function needed for the Szalewicz potential */
         /* Can be described as upper incomplete gamma function.*/
