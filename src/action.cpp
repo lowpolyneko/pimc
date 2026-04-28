@@ -11,6 +11,103 @@
 #include "lookuptable.h"
 #include "wavefunction.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+
+namespace {
+
+bool envFlagEnabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    return value && value[0] != '\0' && value[0] != '0';
+}
+
+bool batchExternalPotentialEnabled()
+{
+    return !envFlagEnabled("PIMC_DISABLE_BATCHED_POTENTIAL");
+}
+
+bool checkBatchedExternalPotential()
+{
+    return envFlagEnabled("PIMC_CHECK_BATCHED_POTENTIAL");
+}
+
+bool printBatchedExternalPotentialStats()
+{
+    return envFlagEnabled("PIMC_BATCHED_POTENTIAL_STATS");
+}
+
+struct BatchedPotentialStats {
+    long long calls = 0;
+    long long positions = 0;
+    double seconds = 0.0;
+
+    ~BatchedPotentialStats()
+    {
+        if (printBatchedExternalPotentialStats()) {
+            std::cerr << "batched_external_potential calls=" << calls
+                      << " positions=" << positions
+                      << " seconds=" << seconds
+                      << std::endl;
+        }
+    }
+};
+
+BatchedPotentialStats& batchedPotentialStats()
+{
+    static BatchedPotentialStats stats;
+    return stats;
+}
+
+double comparisonScale(double expected)
+{
+    return std::max(1.0, std::abs(expected));
+}
+
+void evaluateExternalPotential(PotentialBase* potential,
+        const std::vector<dVec>& positions, std::vector<double>& values)
+{
+    values.resize(positions.size());
+    if (positions.empty())
+        return;
+
+    auto& stats = batchedPotentialStats();
+    const auto start = std::chrono::steady_clock::now();
+    if (batchExternalPotentialEnabled()) {
+        potential->V(positions.data(), values.data(), static_cast<int>(positions.size()));
+    } else {
+        for (std::size_t i = 0; i < positions.size(); ++i)
+            values[i] = potential->V(positions[i]);
+    }
+    const auto stop = std::chrono::steady_clock::now();
+    stats.calls += 1;
+    stats.positions += static_cast<long long>(positions.size());
+    stats.seconds += std::chrono::duration<double>(stop - start).count();
+
+    if (checkBatchedExternalPotential() && batchExternalPotentialEnabled()) {
+        for (std::size_t i = 0; i < positions.size(); ++i) {
+            const double scalarValue = potential->V(positions[i]);
+            const double absDiff = std::abs(values[i] - scalarValue);
+            const double relDiff = absDiff / comparisonScale(scalarValue);
+            if (absDiff > 1.0e-9 && relDiff > 1.0e-9) {
+                std::cerr << "batched external potential mismatch"
+                          << " index=" << i
+                          << " scalar=" << scalarValue
+                          << " batched=" << values[i]
+                          << " abs_diff=" << absDiff
+                          << " rel_diff=" << relDiff
+                          << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+        }
+    }
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ACTION BASE CLASS --------------------------------------------------------
@@ -575,11 +672,16 @@ std::array<double,2> LocalAction::V(const int slice) {
 
     double totVint = 0.0;
     double totVext = 0.0;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
 
     beadLocator bead1;
     bead1[0] = bead2[0] = slice;
 
     int numParticles = path.numBeadsAtSlice(slice);
+    externalPositions.reserve(numParticles);
+    externalFactors.reserve(numParticles);
 
     /* Initialize the separation histogram */
     sepHist.fill(0);
@@ -591,8 +693,9 @@ std::array<double,2> LocalAction::V(const int slice) {
             /* Get the state of bead 1 */
             beadState state1 = path.worm.getState(bead1);
 
-            /* Evaluate the external potential */
-            totVext += path.worm.factor(state1)*externalPtr->V(path(bead1));
+            /* Defer the external potential so all positions on the slice can be batched. */
+            externalPositions.push_back(path(bead1));
+            externalFactors.push_back(path.worm.factor(state1));
 
             /* The loop over all other particles, to find the total interaction
              * potential */
@@ -603,6 +706,10 @@ std::array<double,2> LocalAction::V(const int slice) {
             } // bead2
 
     } // bead1
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    for (std::size_t i = 0; i < externalValues.size(); ++i)
+        totVext += externalFactors[i] * externalValues[i];
 
     /* Separate the external and interaction parts */ 
     return {totVext,totVint};
@@ -622,6 +729,8 @@ double LocalAction::V(const int slice, const double maxR) {
     double totVint = 0.0;
     double totVext = 0.0;
     dVec r1,r2;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalValues;
 
     double r1sq,r2sq;
 
@@ -629,6 +738,7 @@ double LocalAction::V(const int slice, const double maxR) {
     bead1[0] = bead2[0] = slice;
 
     int numParticles = path.numBeadsAtSlice(slice);
+    externalPositions.reserve(numParticles);
 
     /* Initialize the separation histogram */
     cylSepHist.fill(0);
@@ -645,8 +755,8 @@ double LocalAction::V(const int slice, const double maxR) {
 
         if (r1sq < maxR*maxR) {
 
-            /* Evaluate the external potential */
-            totVext += externalPtr->V(path(bead1));
+            /* Defer the external potential so all positions in the cutoff can be batched. */
+            externalPositions.push_back(r1);
 
             /* The loop over all other particles, to find the total interaction
              * potential */
@@ -668,6 +778,10 @@ double LocalAction::V(const int slice, const double maxR) {
 
         } // maxR
     } // bead1
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    for (const auto value : externalValues)
+        totVext += value;
 
     return ( totVext + totVint );
 }
@@ -718,6 +832,9 @@ double LocalAction::Vnn(const int slice) {
 
     double totVint = 0.0;
     double totVext = 0.0;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
 
     //FIXME these variables are unused?
     //iVec gIndex,nngIndex;           // The grid box of a particle
@@ -728,6 +845,8 @@ double LocalAction::Vnn(const int slice) {
 
     beadLocator bead1;      // Interacting beads
     bead1[0] = slice;
+    externalPositions.reserve(path.numBeadsAtSlice(slice));
+    externalFactors.reserve(path.numBeadsAtSlice(slice));
 
     for (bead1[1] = 0; bead1[1] < path.numBeadsAtSlice(slice); bead1[1]++) {
 
@@ -736,9 +855,10 @@ double LocalAction::Vnn(const int slice) {
         /* Get the state of bead 1 */
         beadState state1 = path.worm.getState(bead1);
 
-        /* Accumulate the external potential */
+        /* Defer the external potential so all positions on the slice can be batched. */
         pos = path(bead1);
-        totVext += path.worm.factor(state1)*externalPtr->V(pos);
+        externalPositions.push_back(pos);
+        externalFactors.push_back(path.worm.factor(state1));
 
         /* Get the interaction list */
         lookup.updateInteractionList(path,bead1);
@@ -753,6 +873,10 @@ double LocalAction::Vnn(const int slice) {
         } // n
 
     } // bead1
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    for (std::size_t i = 0; i < externalValues.size(); ++i)
+        totVext += externalFactors[i] * externalValues[i];
 
     return ( totVext + totVint );
 }
