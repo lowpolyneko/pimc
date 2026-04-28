@@ -46,6 +46,9 @@ class PotentialBase {
         /** The potential */
         virtual double V(const dVec &) { return 0.0; }
 
+        /** Batched potential values for external-potential style calls. */
+        virtual void V(const dVec*, double*, int);
+
         /** The effective potential for the pair product approximation */
         virtual double V(const dVec &, const dVec &) { return 0.0; }
 
@@ -2160,6 +2163,7 @@ class GPHeBenzenePotential: public PotentialBase  {
         ~GPHeBenzenePotential();
 
         double V(const dVec &r);
+        void V(const dVec*, double*, int);
 #ifdef USE_GPU
         void gpuV(const double*, double*, int);
 #endif

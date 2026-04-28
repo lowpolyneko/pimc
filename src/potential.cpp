@@ -18,6 +18,7 @@
 #include <boost/math/special_functions/ellint_2.hpp>
 
 #include <stdexcept>
+#include <vector>
 #ifdef USE_HIP
 #include "potential_gpu.hip.h"
 #endif
@@ -120,6 +121,13 @@ PotentialBase::PotentialBase () : tailV(0.0) {
  * Destructor.
 ******************************************************************************/
 PotentialBase::~PotentialBase () {
+}
+
+void PotentialBase::V(const dVec* positions, double* values, int count) {
+    if (count < 0)
+        throw std::runtime_error("Potential batch count must be non-negative.");
+    for (int i = 0; i < count; ++i)
+        values[i] = V(positions[i]);
 }
 
 /**************************************************************************//**
@@ -5555,6 +5563,24 @@ GPHeBenzenePotential::~GPHeBenzenePotential() {
         GPU_ASSERT(gpu_free(d_values, gpStream));
     GPU_ASSERT(gpu_wait(gpStream));
     GPU_ASSERT(gpu_stream_destroy(gpStream));
+#endif
+}
+
+void GPPotential::V(const dVec* positions, double* values, int count) {
+    if (count < 0)
+        throw std::runtime_error("GPPotential batch count must be non-negative.");
+    if (count == 0)
+        return;
+
+#ifdef USE_GPU
+    std::vector<double> flatPositions(NDIM * count);
+    for (int i = 0; i < count; ++i) {
+        for (int dim = 0; dim < NDIM; ++dim)
+            flatPositions[NDIM * i + dim] = positions[i][dim];
+    }
+    gpuV(flatPositions.data(), values, count);
+#else
+    PotentialBase::V(positions, values, count);
 #endif
 }
 
