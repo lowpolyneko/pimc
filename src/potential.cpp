@@ -85,6 +85,9 @@ REGISTER_EXTERNAL_POTENTIAL(             "fixed_lj",       FixedPositionLJPotent
 REGISTER_EXTERNAL_POTENTIAL(            "gasp_prim",          Gasparini_1_Potential, GET_SETUP(), setup.params["empty_width_z"].as<double>(), setup.params["empty_width_y"].as<double>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL(        "graphenelut3d",         GrapheneLUT3DPotential, GET_SETUP(), setup.params["graphenelut3d_file_prefix"].as<std::string>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("graphenelut3dgenerate", GrapheneLUT3DPotentialGenerate, GET_SETUP(), setup.params["strain"].as<double>(), setup.params["poisson"].as<double>(), setup.params["carbon_carbon_dist"].as<double>(), setup.params["lj_sigma"].as<double>(), setup.params["lj_epsilon"].as<double>(), setup.params["k_max"].as<int>(), setup.params["xres"].as<int>(), setup.params["yres"].as<int>(), setup.params["zres"].as<int>(), setup.get_cell())
+REGISTER_EXTERNAL_POTENTIAL("LeeBenzene2003", LeeBenzenePotential, GET_SETUP(), setup.get_cell())
+REGISTER_EXTERNAL_POTENTIAL("ShirkovBenzene2024", ShirkovBenzene, GET_SETUP(), setup.get_cell())
+REGISTER_EXTERNAL_POTENTIAL("GPPotential", GPPotential, GET_SETUP(), setup.get_cell())
 #endif
 
 // ---------------------------------------------------------------------------
@@ -4825,6 +4828,606 @@ std::tuple< DynamicArray<double,3>, DynamicArray<double,3>, DynamicArray<double,
  * Destructor.
 ******************************************************************************/
 GrapheneLUT3DPotentialGenerate::~GrapheneLUT3DPotentialGenerate() {
+}
+#endif
+#if NDIM > 2
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// LeeBenzenePotential Class---------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+/**************************************************************************//**
+ * Constructor.
+******************************************************************************/
+LeeBenzenePotential::LeeBenzenePotential (const Container *_boxPtr) : PotentialBase() {
+
+    boxPtr = _boxPtr;
+
+    Lz = boxPtr->side[NDIM-1];
+    Ly = boxPtr->side[NDIM-2];
+    Lx = boxPtr->side[NDIM-3];
+    /* Arbitrary hard-wall cutoff 1 van der Waals radius (1.4 A) from Lz */
+    Wallcz = Lz/2.0 - 1.4;
+    Wallcx = Lx/2.0 - 1.4;
+    Wallcy = Ly/2.0 - 1.4;
+
+    /* Inverse width of the wall onset */
+    invWallWidth = 20.0;
+
+    /* Fixed positions of FILENAME */
+    std::array<double,2> parameters;        // Array containing the mixed LJ parameters
+    std::array<double,4> pos;               // The loaded position, the first number is the type of atom.
+
+    /* We start with an array of size 500 */
+    fixedParticles.resize(500);
+    atomArray(100);
+
+    /* Here we load both the number and location of fixed positions from disk. */
+    numFixedParticles = 0;
+    typesofatoms = 0;
+    int n = 0;
+    int t = 0;
+    while (communicate()->file("fixed")->stream().good()) {
+        if (communicate()->file("fixed")->stream().peek() == '#') {
+            communicate()->file("fixed")->stream().ignore(512,'\n');
+        }
+        else if (communicate()->file("fixed")->stream().peek() == '*') {
+            communicate()->file("fixed")->stream().ignore(512,'\n');
+            while (communicate()->file("fixed")->stream().peek() != '#') {
+                for (int j = 0; j < 2; j++)
+                    communicate()->file("fixed")->stream() >> parameters[j];
+                typesofatoms++;
+                std::cout<<typesofatoms<<std::endl;
+                if (typesofatoms >= int(atomArray.size()))
+                    atomArray.resizeAndPreserve(typesofatoms);
+                atomArray(t) = parameters;
+                t++;
+                communicate()->file("fixed")->stream().ignore(512,'\n');
+            }
+        }
+        else if (communicate()->file("fixed")->stream().peek() == '$') {
+            break;
+        }
+        else {
+            for (int i = 0; i < NDIM + 1; i++)
+                communicate()->file("fixed")->stream() >> pos[i];
+            //std::cout << pos << std::endl;
+            numFixedParticles++;
+            //std::cout << numFixedParticles << std::endl;
+            if (numFixedParticles >= int(fixedParticles.size()))
+                fixedParticles.resizeAndPreserve(numFixedParticles);
+            fixedParticles(n) = pos;
+            n++;
+            communicate()->file("fixed")->stream().ignore(512,'\n');
+        }
+    }
+    atomArray.resizeAndPreserve(typesofatoms);
+    fixedParticles.resizeAndPreserve(numFixedParticles);
+
+    /* print out the potential to disk */
+    /* int numPoints = 200; */
+    /* double dx = _boxPtr->side[0]/numPoints; */
+    /* double dy = _boxPtr->side[1]/numPoints; */
+    /* pos[2] = -0.5*_boxPtr->side[2] + 2.635; */
+    /* for (int i = 0; i < numPoints; i++) { */
+    /*     pos[0] = -0.5*_boxPtr->side[0] + i*dx; */
+    /*     for (int j = 0; j < numPoints; j++) { */
+    /*         pos[1] = -0.5*_boxPtr->side[1] + j*dy; */
+    /*         communicate()->file("debug")->stream() << format("%24.16e %24.16e %24.16e\n") % pos[0] % pos[1] % V(pos); */
+    /*     } */
+    /* } */
+
+    /* exit(-1); */
+}
+
+/**************************************************************************//**
+ * Destructor.
+******************************************************************************/
+LeeBenzenePotential::~LeeBenzenePotential() {
+}
+
+/**************************************************************************//**
+ *  Return the value of the interaction between a benzene ring
+ *  and a helium adatom at a position, r, above the sheet.
+
+ *  @param r the position of a helium particle
+ *  @return ab-initio calculated potential for Benzene-Helium
+******************************************************************************/
+double LeeBenzenePotential::V(const dVec &r) {
+
+    //Checked on 4.10.25 with Python 
+    double x = r[0];
+    double y = r[1];
+    double z = r[2];
+    double v = 0.0;
+    double rk = 0.0;
+    double rl = 0.0;
+    double rm = 0.0;
+    double hard_wall_height = 100000;
+    dVec sep;
+
+    /* A sigmoid to represent the hard-wall on all three sides*/
+    //v = hard_wall_height*(1/(1.0+exp(-invWallWidth*(r[0]-Wallcx))) + 1/(1.0+exp(-invWallWidth*(r[1]-Wallcy))) + 1/(1.0+exp(-invWallWidth*(r[2]-Wallcz))));
+    //v += hard_wall_height*(1/(1.0+exp(-invWallWidth*(-r[0]-Wallcx))) + 1/(1.0+exp(-invWallWidth*(-r[1]-Wallcy))) + 1/(1.0+exp(-invWallWidth*(-r[2]-Wallcz))));
+    v = hard_wall_height*(1/(1.0+exp(-invWallWidth*(r[2]-Wallcz))));
+    v += hard_wall_height*(1/(1.0+exp(-invWallWidth*(-r[2]-Wallcz))));
+    //double C0 = 6*(1 + c3 + c4 + c5 + c6) + 15*(c11 + c22 + 2*(c12+c13+c14+c23)) + 20*(c111+3*(c112+c122+c113));
+    for (int i = 0;  i < 6; i++) {
+        const double W0 = 0.023767;
+        const double bz = 1.264890;
+	sep[0] = fixedParticles(i)[1] - x;
+        sep[1] = fixedParticles(i)[2] - y;
+        boxPtr->putInBC(sep);
+        sep[2] = sqrt(bz)*(fixedParticles(i)[3] - z);
+	rk = sqrt(dot(sep,sep));
+	v += W0*V2(rk);
+        for (int j = 0; j < i; j++) {
+            sep[0] = fixedParticles(j)[1] - x;
+            sep[1] = fixedParticles(j)[2] - y;
+            boxPtr->putInBC(sep);
+            sep[2] = sqrt(bz)*(fixedParticles(j)[3] - z);
+            rl = sqrt(dot(sep,sep));
+            v += W0*V3(rk,rl);
+            for (int m =0; m < j; m++) {
+                sep[0] = fixedParticles(m)[1] - x;
+                sep[1] = fixedParticles(m)[2] - y;
+                boxPtr->putInBC(sep);
+                sep[2] = sqrt(bz)*(fixedParticles(m)[3] - z);
+                rm = sqrt(dot(sep,sep));                
+                v += W0*V4(rk,rl,rm);
+	    }
+	}
+    }
+    v = v/0.695;
+    //std::cout << v << std::endl;
+    return v;
+
+}
+#endif
+#if NDIM > 2
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ShirkovBenzene Potential Class---------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+/**************************************************************************//**
+ * Constructor.
+******************************************************************************/
+ShirkovBenzene::ShirkovBenzene (const Container *_boxPtr) : PotentialBase() {
+
+    boxPtr = _boxPtr;
+
+    Lz = boxPtr->side[NDIM-1];
+    Ly = boxPtr->side[NDIM-2];
+    Lx = boxPtr->side[NDIM-3];
+    /* Arbitrary hard-wall cutoff 1 van der Waals radius (1.4 A) from Lz */
+    Wallcz = Lz/2.0 - 1.4;
+    Wallcx = Lx/2.0 - 1.4;
+    Wallcy = Ly/2.0 - 1.4;
+
+    /* Inverse width of the wall onset */
+    invWallWidth = 20.0;
+
+    /* Fixed positions of FILENAME */
+    std::array<double,2> parameters;        // Array containing the mixed LJ parameters
+    std::array<double,4> pos;               // The loaded position, the first number is the type of atom.
+
+    /* We start with an array of size 500 */
+//    fixedParticles.resize(500);
+//    atomArray(100);
+//
+//    /* Here we load both the number and location of fixed positions from disk. */
+//    numFixedParticles = 0;
+//    typesofatoms = 0;
+//    int n = 0;
+//    int t = 0;
+//    while (communicate()->file("fixed")->stream().good()) {
+//        if (communicate()->file("fixed")->stream().peek() == '#') {
+//            communicate()->file("fixed")->stream().ignore(512,'\n');
+//        }
+//        else if (communicate()->file("fixed")->stream().peek() == '*') {
+//            communicate()->file("fixed")->stream().ignore(512,'\n');
+//            while (communicate()->file("fixed")->stream().peek() != '#') {
+//                for (int j = 0; j < 2; j++)
+//                    communicate()->file("fixed")->stream() >> parameters[j];
+//                typesofatoms++;
+//                std::cout<<typesofatoms<<std::endl;
+//                if (typesofatoms >= int(atomArray.size()))
+//                    atomArray.resizeAndPreserve(typesofatoms);
+//                atomArray(t) = parameters;
+//                t++;
+//                communicate()->file("fixed")->stream().ignore(512,'\n');
+//            }
+//        }
+//        else if (communicate()->file("fixed")->stream().peek() == '$') {
+//            break;
+//        }
+//        else {
+//            for (int i = 0; i < NDIM + 1; i++)
+//                communicate()->file("fixed")->stream() >> pos[i];
+//            //std::cout << pos << std::endl;
+//            numFixedParticles++;
+//            //std::cout << numFixedParticles << std::endl;
+//            if (numFixedParticles >= int(fixedParticles.size()))
+//                fixedParticles.resizeAndPreserve(numFixedParticles);
+//            fixedParticles(n) = pos;
+//            n++;
+//            communicate()->file("fixed")->stream().ignore(512,'\n');
+//        }
+//    }
+//    atomArray.resizeAndPreserve(typesofatoms);
+//    fixedParticles.resizeAndPreserve(numFixedParticles);
+
+    /* print out the potential to disk */
+    /* int numPoints = 200; */
+    /* double dx = _boxPtr->side[0]/numPoints; */
+    /* double dy = _boxPtr->side[1]/numPoints; */
+    /* pos[2] = -0.5*_boxPtr->side[2] + 2.635; */
+    /* for (int i = 0; i < numPoints; i++) { */
+    /*     pos[0] = -0.5*_boxPtr->side[0] + i*dx; */
+    /*     for (int j = 0; j < numPoints; j++) { */
+    /*         pos[1] = -0.5*_boxPtr->side[1] + j*dy; */
+    /*         communicate()->file("debug")->stream() << format("%24.16e %24.16e %24.16e\n") % pos[0] % pos[1] % V(pos); */
+    /*     } */
+    /* } */
+
+    /* exit(-1); */
+}
+
+/**************************************************************************//**
+ * Destructor.
+******************************************************************************/
+ShirkovBenzene::~ShirkovBenzene() {
+    
+//    atomArray.free();
+//    fixedParticles.free();
+}
+
+/**************************************************************************//**
+ *  Return the value of the interaction between a benzene ring
+ *  and a helium adatom at a position, r, above the sheet.
+
+ *  @param r the position of a helium particle
+ *  @return ab-initio calculated potential for Benzene-Helium
+******************************************************************************/
+double ShirkovBenzene::V(const dVec &r) {
+
+    //Checked on 9.29.25 with Python  
+    double x = r[0];
+    double y = r[1];
+    double z = r[2];
+    double v = 0.0; 
+    double hard_wall_height = 100000;
+
+    v = hard_wall_height*(1/(1.0+exp(-invWallWidth*(r[2]-Wallcz))));
+    v += hard_wall_height*(1/(1.0+exp(-invWallWidth*(-r[2]-Wallcz))));
+    
+    auto x0 = generate_benzene_geometry();
+    // Rotate x,y,z by -30 degrees
+    const double angle = -30.0 * M_PI / 180.0;
+    double xr = x * std::cos(angle) - y * std::sin(angle);
+    double yr = x * std::sin(angle) + y * std::cos(angle);
+    x = xr;
+    y = yr;
+    // Pre-allocate
+    const int na = 6;
+    const int na2 = 12;
+
+    // Cartesian → spherical
+    double rnorm = std::sqrt(x * x + y * y + z * z);
+    double ph0 = std::atan2(y, x);
+    double th0 = std::acos(z / rnorm);
+    double tt = std::cos(th0);
+    double fi = ph0;
+
+    double are = ae / re;
+    double areh = aeh / reh;
+
+    std::vector<double> v_terms(15, 0.0);
+    std::vector<double> v123_terms(5, 0.0);
+
+    // First triple loop: carbon atoms
+    for (int k = 0; k < na; ++k) {
+        double dxk = x - x0[0][k];
+        double dyk = y - x0[1][k];
+        double dzk = z - x0[2][k];
+        double rrk = dxk * dxk + dyk * dyk + dzk * dzk;
+        double rk = std::sqrt(rrk);
+        double rkk = rk - re;
+        double rk2 = rrk / (re * re);
+        double rk6 = rk2 * rk2 * rk2;
+
+        double vk = 1.0 - std::exp(-rkk * are);
+        double wk = vk * vk * (1 + vk * (c3 + vk * (c4 + vk * (c5 + vk * (c6 + vk * (c7 + vk * c8))))));
+        v_terms[0] += wk; // v11
+
+        for (int l = k + 1; l < na; ++l) {
+            double dxl = x - x0[0][l];
+            double dyl = y - x0[1][l];
+            double dzl = z - x0[2][l];
+            double rrl = dxl * dxl + dyl * dyl + dzl * dzl;
+            double rl = std::sqrt(rrl);
+            double rll = rl - re;
+            double vl = 1.0 - std::exp(-rll * are);
+
+            v_terms[1] += vk * vl;
+            v_terms[2] += vk * vk * vl + vk * vl * vl;
+            v_terms[3] += vk * vk * vl * vl;
+            v_terms[4] += vk * vk * vk * vl + vl * vl * vl * vk;
+            v_terms[5] += std::pow(vk, 4) * vl + std::pow(vl, 4) * vk;
+            v_terms[6] += std::pow(vk, 3) * vl * vl + std::pow(vl, 3) * vk * vk;
+            v_terms[7] += std::pow(vk, 5) * vl + std::pow(vl, 5) * vk;
+            v_terms[8] += std::pow(vk, 4) * vl * vl + std::pow(vl, 4) * vk * vk;
+            v_terms[9] += std::pow(vk, 3) * std::pow(vl, 3);
+
+            for (int m = l + 1; m < na; ++m) {
+                double dxm = x - x0[0][m];
+                double dym = y - x0[1][m];
+                double dzm = z - x0[2][m];
+                double rm = std::sqrt(dxm * dxm + dym * dym + dzm * dzm);
+                double rmm = rm - re;
+                double vm = 1.0 - std::exp(-rmm * are);
+
+                v123_terms[0] += vk * vl * vm;
+                v123_terms[1] += vk * vk * vl * vm + vk * vl * vl * vm + vk * vl * vm * vm;
+                v123_terms[2] += vk * vk * vl * vl * vm + vk * vk * vl * vm * vm + vk * vl * vl * vm * vm;
+                v123_terms[3] += std::pow(vk, 3) * vl * vm + vk * std::pow(vl, 3) * vm + vk * vl * std::pow(vm, 3);
+                v123_terms[4] += vk * vk * vl * vl * vm * vm;
+            }
+        }
+    }
+
+    // First potential sum
+    double pt1 = (v_terms[0] + v_terms[1] * c12 + v_terms[2] * c112 + v_terms[3] * c1122 +
+                  v_terms[4] * c1112 + v_terms[5] * c11112);
+    double pt2 = (v_terms[6] * c11122 + v_terms[7] * c111112 + v_terms[8] * c111122 +
+                  v_terms[9] * c111222);
+    double p = pt1 + pt2 + v123_terms[0] * c123 + v123_terms[1] * c1123 + v123_terms[2] * c11223 +
+               v123_terms[3] * c11123 + v123_terms[4] * c112233;
+
+    // Reset some terms for second part
+    for (int i = 0; i < 5; ++i) v_terms[i] = 0.0;
+    std::vector<double> w_terms(3, 0.0);
+
+    // Loop for hydrogen atoms
+    for (int k = 6; k < na2; ++k) {
+        double dxk = x - x0[0][k];
+        double dyk = y - x0[1][k];
+        double dzk = z - x0[2][k];
+        double rk = std::sqrt(dxk * dxk + dyk * dyk + dzk * dzk);
+        double rkk = rk - reh;
+        double vk = 1.0 - std::exp(-rkk * areh);
+        double wk = vk * vk * (1 + vk * (d3 + vk * (d4 + vk * (d5 + vk * d6))));
+        v_terms[0] += wk; // v11
+
+        for (int l = k + 1; l < na2; ++l) {
+            double dxl = x - x0[0][l];
+            double dyl = y - x0[1][l];
+            double dzl = z - x0[2][l];
+            double rl = std::sqrt(dxl * dxl + dyl * dyl + dzl * dzl);
+            double rll = rl - reh;
+            double vl = 1.0 - std::exp(-rll * areh);
+
+            v_terms[1] += vk * vl;
+            v_terms[2] += vk * vk * vl + vk * vl * vl;
+            v_terms[3] += vk * vk * vl * vl;
+            v_terms[4] += std::pow(vk, 3) * vl + std::pow(vl, 3) * vk;
+        }
+
+        for (int l = 0; l < na; ++l) {
+            double dxl = x - x0[0][l];
+            double dyl = y - x0[1][l];
+            double dzl = z - x0[2][l];
+            double rl = std::sqrt(dxl * dxl + dyl * dyl + dzl * dzl);
+            double rll = rl - re;
+            double vl = 1.0 - std::exp(-rll * are);
+            w_terms[1] += vk * vl;
+            w_terms[2] += vk * vk * vl + vk * vl * vl;
+        }
+    }
+
+    // Second potential sum
+    double ph = (v_terms[0] + v_terms[1] * d12 + v_terms[2] * d112 + v_terms[3] * d1122 +
+                 v_terms[4] * d1112 + w_terms[1] * dc12 + w_terms[2] * dc112);
+
+    // Switching functions
+    double r1 = std::sqrt(x * x + y * y + z * z);
+    double h_short = 1.0 / (1.0 + std::exp(gama * (r1 - r0))) / r1;
+    double h_long = 1.0 / (1.0 + std::exp(-gama * (r1 - r0)));
+
+    // Angular dependence
+    double normm1 = std::sqrt(5.0) / 5.0;
+    double normm2 = std::sqrt(13.0) / 13.0;
+    double normm3 = 0.1792151994e-4;
+
+    double p1 = -x1 / std::pow(rnorm, 6) - x2 / std::pow(rnorm, 8) - x3 / std::pow(rnorm, 10) - x4 / std::pow(rnorm, 12);
+    double p2 = -normm1 * (1.5 * tt * tt - 0.5) *
+                (x5 / std::pow(rnorm, 6) + x6 / std::pow(rnorm, 8) + x7 / std::pow(rnorm, 10) + x8 / std::pow(rnorm, 12));
+    double p3 = -normm2 * (3.0 / 8.0 + 35.0 / 8.0 * std::pow(tt, 4) - 15.0 / 4.0 * tt * tt);
+    double p4 = (x9 / std::pow(rnorm, 8) + x10 / std::pow(rnorm, 10) + x11 / std::pow(rnorm, 12));
+    double p5 = -normm3 * 10395.0 * std::pow(1 - tt * tt, 3) * std::cos(6 * fi) * x12 / std::pow(rnorm, 10);
+    double vdw = p1 + p2 + p3 * p4 + p5;
+    
+    if (r1 == 0) {
+        v = v0h * ph + v0 *p + c0;
+    } else {
+	v = (v0h * ph + v0 * p + c0) * h_short + vdw * h_long;
+    }
+    v = v/0.695;
+    return v;
+
+}
+#endif
+#if NDIM > 2
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GPPotential Potential Class---------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+/**************************************************************************//**
+ * Constructor.
+******************************************************************************/
+GPPotential::GPPotential (const Container *_boxPtr) : PotentialBase() {
+
+    boxPtr = _boxPtr;
+
+    Lz = boxPtr->side[NDIM-1];
+    Ly = boxPtr->side[NDIM-2];
+    Lx = boxPtr->side[NDIM-3];
+    /* Arbitrary hard-wall cutoff 1 van der Waals radius (1.4 A) from Lz */
+    Wallcz = Lz/2.0 - 1.4;
+    Wallcx = Lx/2.0 - 1.4;
+    Wallcy = Ly/2.0 - 1.4;
+
+    /* Inverse width of the wall onset */
+    invWallWidth = 20.0;
+
+    /* Fixed positions of FILENAME */
+    std::array<double,4> xpoint;               // The loaded position, the first number is the type of atom.
+
+    numPoints = 0;
+    trainx.resize(16000);
+    double tempval = 0;
+    int p = 0;
+    int total = 0;
+    int j = 0;
+    std::ifstream fin("testdata.dat", std::ios::binary);
+    while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
+	j = total % 4;
+	xpoint[j] = tempval;
+	total++;
+	if ((total+1) % 4 == 0) {
+	    numPoints++;	
+	    if (numPoints >= int(trainx.size()))
+            	trainx.resizeAndPreserve(numPoints);
+	    trainx(p) = xpoint;
+	    
+	    p++;
+	}
+    }
+    fin.close();
+    std::cout << numPoints << std::endl;
+    trainx.resizeAndPreserve(numPoints);   
+    
+    /* We start with an array of size 500 */
+    numPoints = 0;
+    p = 0;
+    tempval = 0;
+    prod.resize(16000);
+    std::ifstream fin2("proddata.dat", std::ios::binary);
+    while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
+        numPoints++;
+        if (numPoints >= int(prod.size()))
+            prod.resizeAndPreserve(numPoints);
+	prod(p) = tempval;
+	p++;
+    }
+    fin2.close();
+    std::cout << numPoints << std::endl;
+    prod.resizeAndPreserve(numPoints);   
+}
+
+/**************************************************************************//**
+ * Destructor.
+******************************************************************************/
+GPPotential::~GPPotential() {
+}
+
+/**************************************************************************//**
+ *  Return the value of the interaction between a benzene ring
+ *  and a helium adatom at a position, r, above the sheet.
+
+ *  @param r the position of a helium particle
+ *  @return GP-evaluated potential for Benzene-Helium
+******************************************************************************/
+double GPPotential::V(const dVec &r) {
+    
+    DynamicArray<double,1> kvec; 
+    kvec.resize(numPoints);
+    //Rotate the point 
+    double x = r[0];
+    double y = r[1];
+    double z = r[2];
+    double finx = 0;
+    double finy = 0;
+    //Reflect z 
+    if (z <= 0) {z = -z;}    
+    //Calculate angle
+    double pi = M_PI;
+    double angle = std::round(rad2deg(atan2(y,x))*10000.0)/10000.0; //Angle in degrees
+    double rotateangle = 0;
+    if (angle < 0) {angle = 180 + (180 + angle);}
+    if (angle <= 30) {
+       finx = x;
+       finy = y;
+    } else {
+        //Calculate rotation angle
+        rotateangle = fmod(angle, 60.0) - angle;
+        //if (rotateangle < 0) {rotateangle = pi + (pi + rotateangle);}
+        //Rotate and/or reflect the point
+        if ((angle + rotateangle) > 30) {
+	    rotateangle = deg2rad(rotateangle);
+            double rotatedanglex = cos(rotateangle)*x - sin(rotateangle)*y;
+            double rotatedangley = sin(rotateangle)*x + cos(rotateangle)*y;
+            finx = cos(pi/3)*rotatedanglex + sin(pi/3)*rotatedangley;
+            finy = sin(pi/3)*rotatedanglex - cos(pi/3)*rotatedangley;
+        } else {
+	    rotateangle = deg2rad(rotateangle);
+            finx = cos(rotateangle)*x - sin(rotateangle)*y;
+            finy = sin(rotateangle)*x + cos(rotateangle)*y;
+        }
+    } 
+    // Thus our rotatet points are now finx, finy and z
+    std::array<double,4> rp;
+    rp[0] = finx;
+    rp[1] = finy;
+    rp[2] = z;
+    rp[3] = 1.0;
+    double rho = sqrt(finx*finx + finy*finy);
+    if (rho < 3 && z < 2) {
+        return 10000; //Hardcoded cutoff
+    }
+    std::array<double,4> new_nrm;
+    //Normalise the new point
+    new_nrm = (rp - xoffset)/xscale;
+    const double* newnrmptr = &new_nrm[0];
+    //for (int i = 0; i < 4; i++) {
+    //    new_nrm(i) = (rp(i) - xoffset[i])/xscale[i];
+    //}
+    //Construct the k-vector   
+    for (int k =0; k < numPoints; k++) {
+	const double* kpr = &trainx(k)[0];
+        kvec(k) = kernel(kpr,newnrmptr);
+        //for (int i = 0; i < 4; i++) {
+            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << "," << kvec(k) << std::endl;
+        //}
+    }   
+    //Obtain the inference 
+    double val_gp = mean + dot(kvec,prod);
+    //std::cout<<x<<","<<y<<","<<z<<std::endl;
+    //for (int k = 0; k < numPoints; k++) {
+    //	std::cout<<kvec(k)<<","<<prod(k)<<","<<std::endl;
+    //}
+    //std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << mean<<"," <<val_gp<<std::endl;
+    //Unstandardise output
+    val_gp = meany + stdy*val_gp; 
+    //Add long-range part
+    double rnorm = sqrt(finx*finx + finy*finy + z*z);
+    double h_long = 1.0 / (1.0 + std::exp(-gama * (rnorm - r0)));
+    if (rho > 5 || z > 6.5) {
+	val = (1 - h_long)*val_gp + h_long*long_range(finx,finy,z); 
+    } else {
+        val = val_gp;
+    	//std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << val_gp/0.695 << "," << val << std::endl; 
+    }		
+
+    //Convert to Kelvin
+    val = val/0.695;
+    //std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << val_gp/0.695 << "," << long_range(finx,finy,z) << "," << val << std::endl; 
+    return val;
 }
 #endif
 
