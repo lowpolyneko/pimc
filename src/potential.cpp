@@ -11,6 +11,8 @@
 #include "lookuptable.h"
 #include "communicator.h"
 #include "dynamic_array_serialization.h"
+#include "factory.h"
+#include "gpkernel.h"
 
 #include <boost/math/special_functions/ellint_1.hpp>
 #include <boost/math/special_functions/ellint_2.hpp>
@@ -213,6 +215,7 @@ DynamicArray<double,1> PotentialBase::getExcLen() {
     DynamicArray<double,1> excLens(0);
     return excLens;
 }
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // TABULATED POTENTIAL CLASS -------------------------------------------------
@@ -336,6 +339,84 @@ double TabulatedPotential::direct(const DynamicArray<double,1> &VTable,
         return extVal[1];
 
     return VTable(k);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GAUSSIAN PROCESS POTENTIAL CLASS ------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//
+/**************************************************************************//**
+ * Constructor.
+******************************************************************************/
+GaussianProcessPotential::GaussianProcessPotential(GaussianProcessKernelBase* _kernelPtr, const std::string& trainInputName) :
+    kernelPtr(_kernelPtr)
+{
+
+    numPoints = 0;
+    trainx.resize(16000);
+    double tempval = 0;
+    int p = 0;
+    int total = 0;
+    int j = 0;
+    std::ifstream fin(_trainingFile, std::ios::binary);
+    if (!fin) {
+        throw std::runtime_error("Could not open GPPotential training file: " + _trainingFile);
+    }
+    while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
+	j = total % 4;
+	xpoint[j] = tempval;
+	total++;
+	if (total % 4 == 0) {
+	    numPoints++;	
+	    if (numPoints >= int(trainx.size()))
+            	trainx.resizeAndPreserve(numPoints);
+	    trainx(p) = xpoint;
+	    
+	    p++;
+	}
+    }
+    fin.close();
+    if ((total % 4) != 0) {
+        throw std::runtime_error("GPPotential training file does not contain a whole number of 4-double records: " + _trainingFile);
+    }
+    if (numPoints == 0) {
+        throw std::runtime_error("GPPotential training file is empty: " + _trainingFile);
+    }
+    trainx.resizeAndPreserve(numPoints);   
+    
+    /* Load the GP coefficient vector. */
+    int numCoefficients = 0;
+    p = 0;
+    tempval = 0;
+    prod.resize(16000);
+    std::ifstream fin2(_coefficientFile, std::ios::binary);
+    if (!fin2) {
+        throw std::runtime_error("Could not open GPPotential coefficient file: " + _coefficientFile);
+    }
+    while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
+        numCoefficients++;
+        if (numCoefficients >= int(prod.size()))
+            prod.resizeAndPreserve(numCoefficients);
+	prod(p) = tempval;
+	p++;
+    }
+    fin2.close();
+    if (numCoefficients == 0) {
+        throw std::runtime_error("GPPotential coefficient file is empty: " + _coefficientFile);
+    }
+    if (numCoefficients != numPoints) {
+        throw std::runtime_error(str(format("GPPotential data size mismatch: %d training points in %s but %d coefficients in %s")
+                    % numPoints % _trainingFile % numCoefficients % _coefficientFile));
+    }
+    prod.resizeAndPreserve(numCoefficients);   
+}
+
+/**************************************************************************//**
+ * Destructor. 
+******************************************************************************/
+GaussianProcessPotential::~GaussianProcessPotential() { 
 }
 
 // ---------------------------------------------------------------------------
@@ -5348,6 +5429,16 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
                     % numPoints % _trainingFile % numCoefficients % _coefficientFile));
     }
     prod.resizeAndPreserve(numCoefficients);   
+
+
+    dVec ℓ1,ℓ2;
+    for (int i = 0; i < NDIM; i++){
+        ℓ1[i] = ell1[i];
+        ℓ2[i] = ell2[i];
+    }
+
+    kernelPtr1 = new MaternKernel(boxPtr,2.5,ℓ1);
+    kernelPtr2 = new MaternKernel(boxPtr,2.5,ℓ2);
 }
 
 /**************************************************************************//**

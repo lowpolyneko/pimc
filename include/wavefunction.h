@@ -3,10 +3,8 @@
  * @author Adrian Del Maestro
  * @date 04.09.2013
  *
- * @brief Action class definitions.
+ * @brief wavefunction class definitions.
  */
-
-/* #include "common.h" */
 
 #include "constants.h"
 #include "lookuptable.h"

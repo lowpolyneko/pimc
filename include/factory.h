@@ -45,7 +45,6 @@ class Factory<BaseType (ParamType...)>
         {
             static Factory<BaseType (ParamType...)> fact;
             return &fact;
-        
         }
 
         /** Overload () to return a singleton instance */
@@ -86,15 +85,18 @@ class EstimatorBase;
 class MoveBase;
 class ActionBase;
 class WaveFunctionBase;
+class GaussianProcessKernelBase;
 class Path;
 class MTRand;
 class LookupTable;
+class Container;
 
 /* Typedefs used for actually creating factories */
 typedef Factory<EstimatorBase* (Path &, ActionBase *, MTRand &, double)> EstimatorFactory;
 typedef Factory<EstimatorBase* (Path &, Path &, ActionBase *, ActionBase *, MTRand &, double)> MultiEstimatorFactory;
 typedef Factory<MoveBase* (Path &, ActionBase *, MTRand &)> MoveFactory;
 typedef Factory<WaveFunctionBase* (const Path &, LookupTable &)> WaveFunctionFactory;
+typedef Factory<GaussianProcessKernelBase* (const Container*, double, const dVec&)> GaussianProcessKernelFactory;
 
 /* template<typename BaseType, class DerivedType, class ...ParamType> */
 /* BaseType CreateObject(ParamType ...param) */
