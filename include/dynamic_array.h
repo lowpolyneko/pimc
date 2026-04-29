@@ -37,7 +37,7 @@ void fill_mdspan(Mdspan view, const typename Mdspan::value_type& value) {
     }
     // For other cases (or rank-1 noncontiguous), do element-wise fill.
     for (std::size_t i = 0; i < view.extent(0); ++i) {
-        view(i) = value;
+        view[i] = value;
     }
 }
 

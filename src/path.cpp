@@ -110,12 +110,12 @@ Path::Path(const Container * _boxPtr, LookupTable &_lookup, int _numTimeSlices,
         /* Here we implement periodic boundary conditions in imaginary time */
         auto pLrow = prevLink.slice<0>(0);
         for (std::size_t j = 0; j < pLrow.extent(0); ++j) {
-            pLrow(j) = { numTimeSlices - 1, static_cast<int>(j) };
+            pLrow[j] = { numTimeSlices - 1, static_cast<int>(j) };
         }
 
         auto nLrow = nextLink.slice<0>(numTimeSlices - 1);
         for (std::size_t j = 0; j < nLrow.extent(0); ++j) {
-            nLrow(j) = { 0, static_cast<int>(j) };
+            nLrow[j] = { 0, static_cast<int>(j) };
         }
     }
 

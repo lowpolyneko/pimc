@@ -10,11 +10,15 @@ include(GNUInstallDirs)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake/modules)
 
 # Set c++ standard
-set(CMAKE_CXX_STANDARD 17)
+if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+  set(CMAKE_CXX_STANDARD 23)
+  set(CMAKE_REQUIRED_FLAGS "-std=c++23")
+else()
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+endif()
 set(CMAKE_STANDARD_REQUIRED TRUE)
-
 include(CheckCXXSourceCompiles)
-set(CMAKE_REQUIRED_FLAGS "-std=c++17")
 
 # --------- Filesystem Header Test ---------
 check_cxx_source_compiles(
