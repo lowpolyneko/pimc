@@ -77,6 +77,7 @@ REGISTER_INTERACTION_POTENTIAL(       "H2LJ",                H2LJ, GET_SETUP(), 
 REGISTER_INTERACTION_POTENTIAL(  "szalewicz",  SzalewiczPotential, GET_SETUP(), setup.get_cell())
 REGISTER_INTERACTION_POTENTIAL(   "harmonic",   HarmonicPotential, GET_SETUP(), setup.params["omega"].as<double>())
 REGISTER_INTERACTION_POTENTIAL(     "dipole",     DipolePotential,  NO_SETUP())
+REGISTER_INTERACTION_POTENTIAL( "sutherland", SutherlandPotential, GET_SETUP(), setup.params["interaction_strength"].as<double>())
 
 /**************************************************************************//**
  * Register external potentials
@@ -356,77 +357,93 @@ double TabulatedPotential::direct(const DynamicArray<double,1> &VTable,
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 //
+
 /**************************************************************************//**
  * Constructor.
 ******************************************************************************/
-GaussianProcessPotential::GaussianProcessPotential(GaussianProcessKernelBase* _kernelPtr, const std::string& trainInputName) :
-    kernelPtr(_kernelPtr)
-{
+GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, const po::paramter_map &gp_params) {
+    kernelType(gp_params["KernelDetails.KernelType"].as<std::string>()),
+    meanType(gp_params["KernelDetails.MeanType"].as<std::string>()),
+    numTrainingPoints(gp_params["KernelDetails.NumPoints"].as<uint32>()),
+    dataStandardMean(gp_params["Standardization.Mean"].as<double>()),
+    dataStandardStd(gp_params["Standardization.Std"].as<double>()),
+    μ(gp_params["MeanPar.value"].as<double>())
 
-    numTrainingPointsPoints = 16;
-    trainx.resize(numTrainingPointsPoints);
+{
+    /* We populate the local vector variables using the parameter map */
+    for (int i=0; i < NDIM; i++){
+       ℓ[i] = gp_params["KernelDetails.ell"].as<std::vector<double>>()[i];
+       normOffset[i] = gp_params["KernelDetails.Offset"].as<std::vector<double>>()[i];
+       normScale[i]  = gp_params["KernelDetails.Scale"].as<std::vector<double>>()[i];
+    }
+
+    /* With all the variables, we are ready to instantiate the kernel */
+    /* !!NOTE!! Later this should be switched to a factory dispatch as we get more kernels*/
+    if (kernelType.find("matern") != std::string::npos)
+        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,gp_params["KernelDetails.MaternNu"].as<double>(),ℓ);
+    else 
+        throw std::runtime_error("Currently only matern kernel is supported\n");
+
+    /* Resize based on the number of training data points */
+    trainx.resize(numTrainingPoints);
+    KinvY.resize(numTrainingPoints);
+
     double tempval = 0;
     int p = 0;
     int total = 0;
     int j = 0;
-    std::ifstream fin(_trainingFile, std::ios::binary);
+
+    /* open the training data file */
+    std::ifstream fin(gp_params["TrainingFile.Name"].as<std::string>(), std::ios::binary);
     if (!fin) {
-        throw std::runtime_error("Could not open GPPotential training file: " + _trainingFile);
+        throw std::runtime_error("Could not open GPPotential training file: " + gp_params["TrainingFile.Name"].as<std::string>());
     }
-    while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
-	j = total % 4;
-	xpoint[j] = tempval;
-	total++;
-	if (total % 4 == 0) {
-	    numPoints++;	
-	    if (numPoints >= int(trainx.size()))
-            	trainx.resizeAndPreserve(numPoints);
-	    trainx(p) = xpoint;
-	    
-	    p++;
-	}
+
+    std::array<double, 4> row;
+    dVec trainPoint;
+    for (int p = 0; p < numTrainingPoints; ++p) {
+
+        if (!fin.read(reinterpret_cast<char*>(row.data()), 4 * sizeof(double))) {
+            throw std::runtime_error("Unexpected end of file while reading GP training data.");
+        }
+
+        for (int i = 0; i < NDIM; ++i)
+            trainPoint[i] = row[i];
+        trainX(p) = trainPoint;
+        KinvY(p) = row[NDIM];
     }
+
     fin.close();
-    if ((total % 4) != 0) {
-        throw std::runtime_error("GPPotential training file does not contain a whole number of 4-double records: " + _trainingFile);
-    }
-    if (numPoints == 0) {
-        throw std::runtime_error("GPPotential training file is empty: " + _trainingFile);
-    }
-    trainx.resizeAndPreserve(numPoints);   
     
-    /* Load the GP coefficient vector. */
-    int numCoefficients = 0;
-    p = 0;
-    tempval = 0;
-    prod.resize(16000);
-    std::ifstream fin2(_coefficientFile, std::ios::binary);
-    if (!fin2) {
-        throw std::runtime_error("Could not open GPPotential coefficient file: " + _coefficientFile);
-    }
-    while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
-        numCoefficients++;
-        if (numCoefficients >= int(prod.size()))
-            prod.resizeAndPreserve(numCoefficients);
-	prod(p) = tempval;
-	p++;
-    }
-    fin2.close();
-    if (numCoefficients == 0) {
-        throw std::runtime_error("GPPotential coefficient file is empty: " + _coefficientFile);
-    }
-    if (numCoefficients != numPoints) {
-        throw std::runtime_error(str(format("GPPotential data size mismatch: %d training points in %s but %d coefficients in %s")
-                    % numPoints % _trainingFile % numCoefficients % _coefficientFile));
-    }
-    prod.resizeAndPreserve(numCoefficients);   
 }
 
 /**************************************************************************//**
- * Destructor. 
+ * GP inference
 ******************************************************************************/
-GaussianProcessPotential::~GaussianProcessPotential() { 
+double GaussianProcessPotential::GP(const dVec &_r) {
+
+    std::array<double,4> new_nrm;
+    dVec r;
+
+    // Normalise the new point
+    r = (_r - normOffset)/normScale;
+
+    const double* newnrmptr = &new_nrm[0];
+
+    // Accumulate k-vector dot product directly to avoid per-call temporary allocation.
+    double kernelDot = 0.0;
+    for (int k =0; k < numPoints; k++)
+        kernelDot += kernelPtr->K(r,trainX(k))*KinvY(k); 
+    
+    // Perform inference
+    double val_gp = μ + kernelDot;
+
+    // Unstandardise output
+    val_gp = dataStandardMean + dataStandardStd*val_gp; 
+
+    return val_gp;
 }
+
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

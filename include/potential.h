@@ -11,14 +11,18 @@
 
 #include "common.h"
 #include "constants.h"
+#include "gpkernel.h"
+#include <boost/program_options.hpp>
+
 #ifdef USE_GPU
 #include "common_gpu.h"
 #endif
-#include "gpkernel.h"
 
 class Path;
 class LookupTable;
 class Container;
+
+namespace po = boost::program_options;
 
 // ========================================================================  
 // PotentialBase Class
@@ -130,18 +134,29 @@ class TabulatedPotential {
 class GaussianProcessPotential {
 
     public:
-        GaussianProcessPotential(GaussianProcessKernelBase*, const std::string&);
-        virtual ~GaussianProcessPotential();
+        GaussianProcessPotential(const Container*, const po::paramter_map &);
+        virtual ~GaussianProcessPotential() = default;
 
         double GP(const dVec&);
 
     protected:
-        GaussianProcessKernalBase* kernelPtr;
-        DynamicArray<dVec,1> trainx;                // Normalized training data points
-        DynamicArray<dVec,1> KinvY;                 // The right hand vector K^{-1}(Y -μ) where Y is standardised 
+        std::unique_ptr<GaussianProcessKernelBase> kernelPtr; // the acutal kernel
+        DynamicArray<dVec,1> trainX;                // Normalized training data points
+        DynamicArray<double,1> KinvY;               // The right hand vector K^{-1}(Y -μ) where Y is standardised 
 
-        uint32 numTrainingPoints;                   // Number of training points
-                                                    
+    private:
+        std::string kernelType;         // the type of kernel (e.g. matern)
+        std::string meanType;           // the type of mean (e.g. constant)
+        dVec ℓ;                         // the length scale hyperparameter
+        uint32 numTrainingPoints;       // Number of training points
+
+        dVec normOffset;                // normalization offset             
+        dVec normScale;                 // normalization scale
+
+        double dataStandardMean;        // data standardization mean
+        double dataStandardStd;         // data standardization standard deviation
+                            
+        double μ;                       // the GP mean
 }
 
 // ========================================================================  
