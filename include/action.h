@@ -53,6 +53,7 @@ class ActionBase {
 
         /* The bare potential action and its correction */
         virtual double barePotentialAction (const beadLocator &) { return 0.0; }
+        virtual void barePotentialAction (const std::vector<beadLocator> &, std::vector<double> &);
         virtual double potentialActionCorrection (const beadLocator &) {return 0.0; }
         virtual double potentialActionCorrection (const beadLocator &, const beadLocator &) { return 0.0; }
 
@@ -167,6 +168,7 @@ class LocalAction : public ActionBase {
 
         /* The bare potential action and its correction */
         double barePotentialAction (const beadLocator &);
+        void barePotentialAction (const std::vector<beadLocator> &, std::vector<double> &);
         double potentialActionCorrection (const beadLocator &);
         double potentialActionCorrection (const beadLocator &, const beadLocator &);
 

@@ -71,6 +71,8 @@ struct ActionCallStats {
     long long localListActive = 0;
     long long bareScalarCalls = 0;
     long long bareScalarActive = 0;
+    long long bareListCalls = 0;
+    long long bareListActive = 0;
     long long correctionRangeCalls = 0;
     long long correctionRangeBeads = 0;
     long long baseRangeCalls = 0;
@@ -90,6 +92,8 @@ struct ActionCallStats {
                       << " local_list_active=" << localListActive
                       << " bare_scalar_calls=" << bareScalarCalls
                       << " bare_scalar_active=" << bareScalarActive
+                      << " bare_list_calls=" << bareListCalls
+                      << " bare_list_active=" << bareListActive
                       << " correction_range_calls=" << correctionRangeCalls
                       << " correction_range_beads=" << correctionRangeBeads
                       << " base_range_calls=" << baseRangeCalls
@@ -402,6 +406,14 @@ double ActionBase::potentialAction (const std::vector<beadLocator> &beads) {
     return totU;
 }
 
+void ActionBase::barePotentialAction (const std::vector<beadLocator> &beads,
+        std::vector<double> &values) {
+
+    values.resize(beads.size());
+    for (std::size_t i = 0; i < beads.size(); ++i)
+        values[i] = barePotentialAction(beads[i]);
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // LOCAL ACTION BASE CLASS ---------------------------------------------------
@@ -630,6 +642,50 @@ double LocalAction::barePotentialAction (const beadLocator &beadIndex) {
 #endif
 
     return bareU;
+}
+
+void LocalAction::barePotentialAction (const std::vector<beadLocator> &beads,
+        std::vector<double> &values) {
+
+    std::vector<std::size_t> activeIndices;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
+    values.assign(beads.size(), 0.0);
+    activeIndices.reserve(beads.size());
+    externalPositions.reserve(beads.size());
+    externalFactors.reserve(beads.size());
+
+    for (std::size_t i = 0; i < beads.size(); ++i) {
+        const auto& bead = beads[i];
+        if (path.worm.beadOn(bead)) {
+            activeIndices.push_back(i);
+            const beadState state = path.worm.getState(bead);
+            externalPositions.push_back(path(bead));
+            externalFactors.push_back(path.worm.factor(state));
+        }
+    }
+
+    actionCallStats().bareListCalls += 1;
+    actionCallStats().bareListActive += static_cast<long long>(activeIndices.size());
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+
+    for (std::size_t active = 0; active < activeIndices.size(); ++active) {
+        const std::size_t i = activeIndices[active];
+        const beadLocator& bead = beads[i];
+        double bareU = VFactor[bead[0] % 2] * tau() *
+            Vnn(bead, externalFactors[active] * externalValues[active]);
+
+#if PIGS
+        if ((bead[0] == 0) || (bead[0] == (constants()->numTimeSlices() - 1))) {
+            bareU *= 0.5 * endFactor;
+            bareU -= log(waveFunctionPtr->PsiTrial(bead[0]));
+        }
+#endif
+
+        values[i] = bareU;
+    }
 }
 
 /**************************************************************************//**
