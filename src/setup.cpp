@@ -748,15 +748,15 @@ bool Setup::parseOptions() {
     	desc.add_options()
             ("KernelDetails.KernelType", po::value<std::string>())
             ("KernelDetails.MeanType", po::value<std::string>())
-            ("KernelDetails.MaternNu", po::value<std::vector<float>>()->multitoken())
-            ("KernelDetails.ell", po::value<std::vector<float>>()->multitoken())
+            ("KernelDetails.MaternNu", po::value<std::vector<double>>()->multitoken())
+            ("KernelDetails.ell", po::value<std::vector<double>>()->multitoken())
             ("KernelDetails.NumPoints", po::value<int>())
-            ("Normalisation.Offset", po::value<std::vector<float>>()->multitoken())
-            ("Normalisation.Scale", po::value<std::vector<float>>()->multitoken())
-            ("Standardisation.Mean", po::value<float>())
-            ("Standardisation.Std", po::value<float>())
-            ("MeanPar.value", po::value<float>())
-            ("Multifidelity.power", po::value<float>());
+            ("Normalization.Offset", po::value<std::vector<double>>()->multitoken())
+            ("Normalization.Scale", po::value<std::vector<double>>()->multitoken())
+            ("Standardization.Mean", po::value<double>())
+            ("Standardization.Std", po::value<double>())
+            ("MeanPar.value", po::value<double>())
+            ("Multifidelity.power", po::value<double>());
 
    	po::variables_map vm;
 	
@@ -765,20 +765,20 @@ bool Setup::parseOptions() {
 
 	// Check if Normalisation offset and scale have the correct dimensionsi
 	if (vm["KernelDetails.KernelType"].as<std::string>()=="mf") {
-	    if ((vm["Normalisation.Offset"].as<std::vector<float>>().size() != NDIM + 1) || (vm["Normalisation.Scale"].as<std::vector<float>>().size() != NDIM + 1)) {
+	    if ((vm["Normalization.Offset"].as<std::vector<double>>().size() != NDIM + 1) || (vm["Normalization.Scale"].as<std::vector<double>>().size() != NDIM + 1)) {
 	        std::cerr << "For multi-fidelity gp normalisation vectors must have size NDIM + 1\n";
 	        return 1;
 	    }
 	}	
 	else if (vm["KernelDetails.KernelType"].as<std::string>()!="mf") {  
-	    if ((vm["Normalisation.Offset"].as<std::vector<float>>().size() != NDIM) || (vm["Normalisation.Scale"].as<std::vector<float>>().size() != NDIM)) {
+	    if ((vm["Normalization.Offset"].as<std::vector<double>>().size() != NDIM) || (vm["Normalization.Scale"].as<std::vector<double>>().size() != NDIM)) {
 	    	std::cerr << "Normalisation vectors must have size NDIM\n";
 	    	return 1;
 	    }
 	}
 
 	// Check if ell is the correct length
-	if (vm["KernelDetails.ell"].as<std::vector<float>>().size() != NDIM * vm["KernelDetails.MaternNu"].as<std::vector<float>>().size()) {
+	if (vm["KernelDetails.ell"].as<std::vector<double>>().size() != NDIM * vm["KernelDetails.MaternNu"].as<std::vector<double>>().size()) {
 	    std::cerr << "Lengthscale vector must be of size NDIM * size(MaternNu)\n";
 	}
     } 
