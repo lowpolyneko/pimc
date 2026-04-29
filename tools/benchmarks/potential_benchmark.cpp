@@ -18,6 +18,7 @@ struct BenchmarkOptions {
     std::size_t samples = 4096;
     double minRadius = 0.25;
     double maxRadius = 5.0;
+    bool gpu = false;
     bool list = false;
     bool help = false;
 };
@@ -81,6 +82,7 @@ void printHelp(const char* exe)
         << "  --benchmark-samples N            generated sample positions [4096]\n"
         << "  --benchmark-min R                minimum sample radius [0.25]\n"
         << "  --benchmark-max R                maximum sample radius [5.0]\n\n"
+        << "  --benchmark-gpu                  use GPPotential batched GPU value path\n\n"
         << "Any remaining options are passed through the normal PIMC setup parser.\n"
         << "The benchmark supplies defaults for size, temperature, particle count,\n"
         << "time slices, tube radius, and common LJ/Gasparini parameters.\n";
@@ -148,6 +150,8 @@ int main(int argc, char* argv[])
                 bench.help = true;
             } else if (arg == "--benchmark-list") {
                 bench.list = true;
+            } else if (arg == "--benchmark-gpu") {
+                bench.gpu = true;
             } else if (isBenchmarkOption(arg, "--benchmark-kind")) {
                 bench.kind = optionValue(arg, "--benchmark-kind", i, argc, argv);
             } else if (isBenchmarkOption(arg, "--benchmark-potential")) {
@@ -258,15 +262,45 @@ int main(int argc, char* argv[])
     }
 
     const auto samples = makeSamples(bench.samples, bench.minRadius, bench.maxRadius);
+    std::vector<double> flatSamples(samples.size() * NDIM);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        for (int d = 0; d < NDIM; ++d)
+            flatSamples[NDIM * i + d] = samples[i][d];
+    }
 
     std::cout << "potential=" << bench.potential
               << " kind=" << bench.kind
               << " ndim=" << NDIM
               << " samples=" << samples.size()
               << " iterations=" << bench.iterations
+#ifdef USE_GPU
+              << " gpu=" << (bench.gpu ? "on" : "off")
+#else
+              << " gpu=unavailable"
+#endif
               << std::endl;
 
     if (bench.method == "value" || bench.method == "all") {
+#ifdef USE_GPU
+        if (bench.gpu) {
+            auto* gp = dynamic_cast<GPPotential*>(potential.get());
+            if (!gp) {
+                std::cerr << "error: --benchmark-gpu is only supported for GPPotential" << std::endl;
+                return EXIT_FAILURE;
+            }
+            std::vector<double> values(samples.size());
+            runTimed("gpuV(r)", bench.iterations, [&](std::size_t i) {
+                if ((i % samples.size()) == 0)
+                    gp->gpuV(flatSamples.data(), values.data(), static_cast<int>(samples.size()));
+                return values[i % samples.size()];
+            });
+        } else
+#else
+        if (bench.gpu) {
+            std::cerr << "error: --benchmark-gpu requires a GPU-enabled build" << std::endl;
+            return EXIT_FAILURE;
+        }
+#endif
         runTimed("V(r)", bench.iterations, [&](std::size_t i) {
             return potential->V(samples[i % samples.size()]);
         });

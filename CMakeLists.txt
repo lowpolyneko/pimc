@@ -338,6 +338,10 @@ list(REMOVE_ITEM POTENTIAL_BENCHMARK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/pdrive
 add_executable(potential_benchmark.e
     ${POTENTIAL_BENCHMARK_SRC}
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmarks/potential_benchmark.cpp)
+if (${GPU_BACKEND} STREQUAL "cuda")
+    target_sources(potential_benchmark.e PRIVATE ${PIMC_CUDA})
+    set_target_properties(potential_benchmark.e PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+endif()
 target_include_directories(potential_benchmark.e PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
