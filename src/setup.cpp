@@ -733,6 +733,56 @@ bool Setup::parseOptions() {
         return 1;
     }
 
+    /* For a GP potential validate the hyperparameter input */
+    if (params["external"].as<std::string>() == "GPPotential") {
+	
+	// Check if the file exists
+    	std::ifstream ifs("hyperparameters.ini");
+    	if (!ifs) {
+            std::cerr << "Cannot open hyperparameters.ini\n";
+            return 1;
+    	}
+
+	po::options_description desc("Allowed options");
+
+    	desc.add_options()
+            ("KernelDetails.KernelType", po::value<std::string>())
+            ("KernelDetails.MeanType", po::value<std::string>())
+            ("KernelDetails.MaternNu", po::value<std::vector<float>>()->multitoken())
+            ("KernelDetails.ell", po::value<std::vector<float>>()->multitoken())
+            ("KernelDetails.NumPoints", po::value<int>())
+            ("Normalisation.Offset", po::value<std::vector<float>>()->multitoken())
+            ("Normalisation.Scale", po::value<std::vector<float>>()->multitoken())
+            ("Standardisation.Mean", po::value<float>())
+            ("Standardisation.Std", po::value<float>())
+            ("MeanPar.value", po::value<float>())
+            ("Multifidelity.power", po::value<float>());
+
+   	po::variables_map vm;
+	
+	po::store(po::parse_config_file(ifs, desc, true), vm);
+    	po::notify(vm);
+
+	// Check if Normalisation offset and scale have the correct dimensionsi
+	if (vm["KernelDetails.KernelType"].as<std::string>()=="mf") {
+	    if ((vm["Normalisation.Offset"].as<std::vector<float>>().size() != NDIM + 1) || (vm["Normalisation.Scale"].as<std::vector<float>>().size() != NDIM + 1)) {
+	        std::cerr << "For multi-fidelity gp normalisation vectors must have size NDIM + 1\n";
+	        return 1;
+	    }
+	}	
+	else if (vm["KernelDetails.KernelType"].as<std::string>()!="mf") {  
+	    if ((vm["Normalisation.Offset"].as<std::vector<float>>().size() != NDIM) || (vm["Normalisation.Scale"].as<std::vector<float>>().size() != NDIM)) {
+	    	std::cerr << "Normalisation vectors must have size NDIM\n";
+	    	return 1;
+	    }
+	}
+
+	// Check if ell is the correct length
+	if (vm["KernelDetails.ell"].as<std::vector<float>>().size() != NDIM * vm["KernelDetails.MaternNu"].as<std::vector<float>>().size()) {
+	    std::cerr << "Lengthscale vector must be of size NDIM * size(MaternNu)\n";
+	}
+    } 
+
     /* If a list of estimators has been supplied, we need to verify */
     for (std::string name : params["estimator"].as<std::vector<std::string>>()){
         if (std::find(estimatorName.begin(), estimatorName.end(), name) == estimatorName.end()) {
