@@ -43,6 +43,42 @@ class PotentialBase {
         PotentialBase ();
         virtual ~PotentialBase();
     
+#if _cplusplus >= 202302L
+        /** The potential */
+        template <typename Self>
+        inline double V(this Self&& s, const dVec &pos) {
+            return std::forward<Self>(s).V(pos);
+        }
+
+        /** The effective potential for the pair product approximation */
+        template <typename Self>
+        inline double V(this Self&& s, const dVec &sep1, const dVec &sep2) {
+            return std::forward<Self>(s).V(sep1, sep2);
+        }
+
+        /** The gradient of the potential*/
+        template <typename Self>
+        inline dVec gradV(this Self&& s, const dVec &pos) {
+            return std::forward<Self>(s).gradV(pos);
+        }
+
+        /** Grad^2 of the potential*/
+        template <typename Self>
+        inline dVec grad2V(this Self&& s, const dVec &r) {
+            return std::forward<Self>(s).grad2V(r);
+        }
+
+        /** The derivative of the effective potential with respect to lambda
+         *  and tau */
+        template <typename Self>
+        inline double dVdlambda(this Self&& s, const dVec &sep1, const dVec &sep2) {
+            return std::forward<Self>(s).dVdlambda(sep1, sep2);
+        }
+        template <typename Self>
+        inline double dVdtau(this Self&& s, const dVec &sep1, const dVec &sep2) {
+            return std::forward<Self>(s).dVdtau(sep1, sep2);
+        }
+#else
         /** The potential */
         virtual double V(const dVec &) { return 0.0; }
 
@@ -62,6 +98,7 @@ class PotentialBase {
          *  and tau */
         virtual double dVdlambda(const dVec &, const dVec &) {return 0.0;}
         virtual double dVdtau(const dVec &, const dVec &) {return 0.0;}
+#endif
         
         /** Default Initial configuration of particles*/
         virtual DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
