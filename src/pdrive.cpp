@@ -19,6 +19,8 @@
 #include "cmc.h"
 #include "move.h"
 
+#include "gpkernel.h"
+
 /**
  * Main driver.
  * Read in all program options from the user using boost::program_options and setup the simulation

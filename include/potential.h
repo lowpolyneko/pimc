@@ -14,6 +14,7 @@
 #ifdef USE_GPU
 #include "common_gpu.h"
 #endif
+#include "gpkernel.h"
 
 class Path;
 class LookupTable;
@@ -117,6 +118,31 @@ class TabulatedPotential {
         virtual double valued2Vdr2 (const double) = 0;                  
     
 };
+
+// ========================================================================  
+// GaussianProcessPotential Class
+// ========================================================================  
+/** 
+ * A generic Gaussian Process potential.
+ *
+ * Given a kernel, implements GP inference. 
+ */
+class GaussianProcessPotential {
+
+    public:
+        GaussianProcessPotential(GaussianProcessKernelBase*, const std::string&);
+        virtual ~GaussianProcessPotential();
+
+        double GP(const dVec&);
+
+    protected:
+        GaussianProcessKernalBase* kernelPtr;
+        DynamicArray<dVec,1> trainx;                // Normalized training data points
+        DynamicArray<dVec,1> KinvY;                 // The right hand vector K^{-1}(Y -μ) where Y is standardised 
+
+        uint32 numTrainingPoints;                   // Number of training points
+                                                    
+}
 
 // ========================================================================  
 // FreePotential Class
@@ -396,7 +422,6 @@ class DipolePotential : public PotentialBase  {
             return 6.0/(x*x*x*x*x);
         }
 };
-
 
 #if NDIM > 2
 // ========================================================================  
@@ -729,7 +754,6 @@ class AzizPotential : public PotentialBase, public TabulatedPotential {
                     - D*ix + 2.0) * exp(-(D*ix - 1.0)*(D*ix - 1.0));
             return (x < D ? r : 0.0 );
         }
-
 };
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -1308,7 +1332,6 @@ private:
     double dWdxi(double yt, double dxt);
     double dWddxt(double yt, double dxt);
 };
-
 
 // ========================================================================  
 // Hard Rod Potential Class
@@ -2084,6 +2107,7 @@ class GPPotential: public PotentialBase  {
         void gpuV(const double*, double*, int);
 #endif
     private:
+        GaussianProcessKernelBase *kernelPtr1, *kernelPtr2;
         const Container *boxPtr;
         double Lz;
         double Lx;
@@ -2163,8 +2187,16 @@ inline double GPPotential::kernel(const double* x1, const double* x2) {
     int z2 = x2[3];
     
     double bias_factor = (1 - z1)*(1-z2)*std::pow((1+z1*z2),power);
-    double k1 = matern_kernel(x1,x2,inv_ell1);
-    double k2 = matern_kernel(x1,x2,inv_ell2);
+
+    // double k1 = matern_kernel(x1,x2,inv_ell1);
+    // double k2 = matern_kernel(x1,x2,inv_ell2);
+    dVec r1,r2;
+    for (int i = 0; i < NDIM; i++){
+        r1[i] = x1[i];
+        r2[i] = x2[i];
+    }
+    double k1 = kernelPtr1->K(r1,r2);
+    double k2 = kernelPtr2->K(r1,r2); 
     //std::cout << bias_factor << "," << k1 << "," << k2 << std::endl;
     double covar_val = oscale*(k1 + bias_factor*k2);
     return covar_val;
