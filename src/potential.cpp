@@ -354,8 +354,8 @@ GaussianProcessPotential::GaussianProcessPotential(GaussianProcessKernelBase* _k
     kernelPtr(_kernelPtr)
 {
 
-    numPoints = 0;
-    trainx.resize(16000);
+    numTrainingPointsPoints = 16;
+    trainx.resize(numTrainingPointsPoints);
     double tempval = 0;
     int p = 0;
     int total = 0;
