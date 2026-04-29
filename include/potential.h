@@ -140,7 +140,7 @@ class GaussianProcessPotential {
         double GP(const dVec&);
 
     protected:
-        std::unique_ptr<GaussianProcessKernelBase> kernelPtr; // the acutal kernel
+        std::unique_ptr<GaussianProcessKernelBase> kernelPtr; // the kernel
         DynamicArray<dVec,1> trainX;                // Normalized training data points
         DynamicArray<double,1> KinvY;               // The right hand vector K^{-1}(Y -μ) where Y is standardised 
 
@@ -2156,7 +2156,7 @@ inline std::vector<std::vector<double>> ShirkovBenzene::generate_benzene_geometr
 class GPHeBenzenePotential: public PotentialBase  {
 
     public:
-        GPHeBenzenePotential(const Container*, const po::variables_map &, const std::string &, const std::string &);
+        GPHeBenzenePotential(const Container*, const po::variables_map &);
         ~GPHeBenzenePotential();
 
         double V(const dVec &r);

@@ -100,7 +100,7 @@ REGISTER_EXTERNAL_POTENTIAL(        "graphenelut3d",         GrapheneLUT3DPotent
 REGISTER_EXTERNAL_POTENTIAL("graphenelut3dgenerate", GrapheneLUT3DPotentialGenerate, GET_SETUP(), setup.params["strain"].as<double>(), setup.params["poisson"].as<double>(), setup.params["carbon_carbon_dist"].as<double>(), setup.params["lj_sigma"].as<double>(), setup.params["lj_epsilon"].as<double>(), setup.params["k_max"].as<int>(), setup.params["xres"].as<int>(), setup.params["yres"].as<int>(), setup.params["zres"].as<int>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("LeeBenzene2003", LeeBenzenePotential, GET_SETUP(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("ShirkovBenzene2024", ShirkovBenzene, GET_SETUP(), setup.get_cell())
-REGISTER_EXTERNAL_POTENTIAL("gp_he_benzene", GPHeBenzenePotential, GET_SETUP(), setup.get_cell(), setup.gp_params, setup.params["gp_training_file"].as<std::string>(), setup.params["gp_coefficient_file"].as<std::string>())
+REGISTER_EXTERNAL_POTENTIAL("gp_he_benzene", GPHeBenzenePotential, GET_SETUP(), setup.get_cell(), setup.gp_params)
 #endif
 
 // ---------------------------------------------------------------------------
@@ -361,26 +361,25 @@ double TabulatedPotential::direct(const DynamicArray<double,1> &VTable,
  * Constructor.
 ******************************************************************************/
 GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, const po::variables_map &gp_params) :
-    kernelType(gp_params["KernelDetails.KernelType"].as<std::string>()),
-    meanType(gp_params["KernelDetails.MeanType"].as<std::string>()),
-    numTrainingPoints(gp_params["KernelDetails.NumPoints"].as<uint32>()),
-    sigma2(gp_params["KernelDetails.sigma2"].as<double>()),
-    dataStandardMean(gp_params["Standardization.Mean"].as<double>()),
-    dataStandardStd(gp_params["Standardization.Std"].as<double>()),
-    μ(gp_params["MeanPar.value"].as<double>())
+    kernelType(gp_params["kernel.type"].as<std::string>()),
+    meanType(gp_params["kernel.meanType"].as<std::string>()),
+    numTrainingPoints(gp_params["kernel.numTrainingPoints"].as<uint32>()),
+    sigma2(gp_params["kernel.sigma2"].as<double>()),
+    dataStandardMean(gp_params["data.standardMean"].as<double>()),
+    dataStandardStd(gp_params["data.standardStd"].as<double>()),
+    μ(gp_params["kernel.mean"].as<double>())
 {
-
     /* We populate the local vector variables using the parameter map */
     for (int i=0; i < NDIM; i++){
-       ℓ[i] = gp_params["KernelDetails.ell"].as<std::vector<double>>()[i];
-       normOffset[i] = gp_params["Normalization.Offset"].as<std::vector<double>>()[i];
-       normScale[i]  = gp_params["Normalization.Scale"].as<std::vector<double>>()[i];
+       ℓ[i] = gp_params["kernel.ell"].as<std::vector<double>>()[i];
+       normOffset[i] = gp_params["data.normOffset"].as<std::vector<double>>()[i];
+       normScale[i]  = gp_params["data.normScale"].as<std::vector<double>>()[i];
     }
 
     /* With all the variables, we are ready to instantiate the kernel */
     /* !!NOTE!! Later this should be switched to a factory dispatch as we get more kernels*/
     if (kernelType.find("matern") != std::string::npos)
-        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,gp_params["KernelDetails.MaternNu"].as<std::vector<double>>()[0],ℓ);
+        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,gp_params["kernel.maternNu"].as<std::vector<double>>()[0],ℓ);
     else 
         throw std::runtime_error("Currently only matern kernel is supported\n");
 
@@ -389,9 +388,9 @@ GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, con
     KinvY.resize(numTrainingPoints);
 
     /* open the training data file */
-    std::ifstream fin(gp_params["TrainingFile.Name"].as<std::string>(), std::ios::binary);
+    std::ifstream fin(gp_params["kernel.trainingFileName"].as<std::string>(), std::ios::binary);
     if (!fin) {
-        throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + gp_params["TrainingFile.Name"].as<std::string>());
+        throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + gp_params["kernel.trainingFile"].as<std::string>());
     }
 
     /* data file has a row: x,y,z,K^{-1}Y,fidelity */
@@ -421,18 +420,13 @@ double GaussianProcessPotential::GP(const dVec &_r) {
     dVec r;
     r = (_r - normOffset)/normScale;
 
-    // Accumulate k-vector dot product directly to avoid per-call temporary allocation.
+    // Accumulate k-vector dot product 
     double kernelDot = 0.0;
     for (int k =0; k < numTrainingPoints; k++)
         kernelDot += kernelPtr->K(r,trainX(k))*KinvY(k); 
-    
-    // Perform inference
-    double val_gp = μ + sigma2*kernelDot;
-
-    // Unstandardise output
-    val_gp = dataStandardMean + dataStandardStd*val_gp; 
-
-    return val_gp;
+   
+    // Perform inference and undstandardize output
+    return dataStandardMean + dataStandardStd * (μ + sigma2*kernelDot);
 }
 
 // ---------------------------------------------------------------------------
@@ -5448,12 +5442,14 @@ double ShirkovBenzene::V(const dVec &r) {
 /**************************************************************************//**
  * Constructor.
 ******************************************************************************/
-GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::variables_map &gp_params,  
-        const std::string &_trainingFile, const std::string &_coefficientFile) : 
+GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::variables_map &gp_params) : 
     PotentialBase(),
     GPPotential(_boxPtr, gp_params)
 {
     boxPtr = _boxPtr;
+
+    std::string _trainingFile = "testdata.dat";
+    std::string _coefficientFile = "proddata.dat";
 
     Lz = boxPtr->side[NDIM-1];
     Ly = boxPtr->side[NDIM-2];
@@ -5475,6 +5471,7 @@ GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::
     int p = 0;
     int total = 0;
     int j = 0;
+
     std::ifstream fin(_trainingFile, std::ios::binary);
     if (!fin) {
         throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + _trainingFile);
