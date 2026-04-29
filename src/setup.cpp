@@ -734,7 +734,7 @@ bool Setup::parseOptions() {
     }
 
     /* For a GP potential validate the hyperparameter input */
-    if (params["external"].as<std::string>() == "GPPotential") {
+    if (params["external"].as<std::string>() == "gp_he_benzene") {
 	
 	// Check if the file exists
     	std::ifstream ifs("hyperparameters.ini");
@@ -743,45 +743,49 @@ bool Setup::parseOptions() {
             return 1;
     	}
 
-	po::options_description desc("Allowed options");
+	po::options_description desc("Allowed GP options");
 
     	desc.add_options()
             ("KernelDetails.KernelType", po::value<std::string>())
             ("KernelDetails.MeanType", po::value<std::string>())
             ("KernelDetails.MaternNu", po::value<std::vector<double>>()->multitoken())
             ("KernelDetails.ell", po::value<std::vector<double>>()->multitoken())
-            ("KernelDetails.NumPoints", po::value<int>())
+            ("KernelDetails.sigma2", po::value<double>())
+            ("KernelDetails.NumPoints", po::value<uint32>())
             ("Normalization.Offset", po::value<std::vector<double>>()->multitoken())
             ("Normalization.Scale", po::value<std::vector<double>>()->multitoken())
             ("Standardization.Mean", po::value<double>())
             ("Standardization.Std", po::value<double>())
-            ("MeanPar.value", po::value<double>())
-            ("Multifidelity.power", po::value<double>());
+            ("TrainingFile.Name", po::value<std::string>())
+            ("MeanPar.value", po::value<double>());
+            // ("Multifidelity.power", po::value<double>());
+            
+	po::store(po::parse_config_file(ifs, desc, true), gp_params);
+    	po::notify(gp_params);
 
-   	po::variables_map vm;
-	
-	po::store(po::parse_config_file(ifs, desc, true), vm);
-    	po::notify(vm);
+	// // Check if Normalisation offset and scale have the correct dimensionsi
+	// if (gp_params["KernelDetails.KernelType"].as<std::string>()=="matern") {
+	//     if ((gp_params["Normalization.Offset"].as<std::vector<double>>().size() != NDIM + 1) || (gp_params["Normalization.Scale"].as<std::vector<double>>().size() != NDIM + 1)) {
+	//         std::cerr << "For multi-fidelity gp normalisation vectors must have size NDIM + 1\n";
+	//         return 1;
+	//     }
+            // std::cout << "inside GP hyperparameters validation" << std::endl;
+	// }	
+	// else if (gp_params["KernelDetails.KernelType"].as<std::string>()!="matern") {  
+	//     if ((gp_params["Normalization.Offset"].as<std::vector<double>>().size() != NDIM) || (gp_params["Normalization.Scale"].as<std::vector<double>>().size() != NDIM)) {
+	//     	std::cerr << "Normalisation vectors must have size NDIM\n";
+	//     	return 1;
+	//     }
+	// }
 
-	// Check if Normalisation offset and scale have the correct dimensionsi
-	if (vm["KernelDetails.KernelType"].as<std::string>()=="mf") {
-	    if ((vm["Normalization.Offset"].as<std::vector<double>>().size() != NDIM + 1) || (vm["Normalization.Scale"].as<std::vector<double>>().size() != NDIM + 1)) {
-	        std::cerr << "For multi-fidelity gp normalisation vectors must have size NDIM + 1\n";
-	        return 1;
-	    }
-	}	
-	else if (vm["KernelDetails.KernelType"].as<std::string>()!="mf") {  
-	    if ((vm["Normalization.Offset"].as<std::vector<double>>().size() != NDIM) || (vm["Normalization.Scale"].as<std::vector<double>>().size() != NDIM)) {
-	    	std::cerr << "Normalisation vectors must have size NDIM\n";
-	    	return 1;
-	    }
-	}
+	// // Check if ell is the correct length
+	// if (gp_params["KernelDetails.ell"].as<std::vector<double>>().size() != NDIM * gp_params["KernelDetails.MaternNu"].as<std::vector<double>>().size()) {
+	//     std::cerr << "Lengthscale vector must be of size NDIM * size(MaternNu)\n";
+	// }
 
-	// Check if ell is the correct length
-	if (vm["KernelDetails.ell"].as<std::vector<double>>().size() != NDIM * vm["KernelDetails.MaternNu"].as<std::vector<double>>().size()) {
-	    std::cerr << "Lengthscale vector must be of size NDIM * size(MaternNu)\n";
-	}
+        // std::cout << "inside GP hyperparameters validation" << std::endl;
     } 
+
 
     /* If a list of estimators has been supplied, we need to verify */
     for (std::string name : params["estimator"].as<std::vector<std::string>>()){

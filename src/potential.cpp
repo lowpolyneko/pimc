@@ -77,7 +77,6 @@ REGISTER_INTERACTION_POTENTIAL(       "H2LJ",                H2LJ, GET_SETUP(), 
 REGISTER_INTERACTION_POTENTIAL(  "szalewicz",  SzalewiczPotential, GET_SETUP(), setup.get_cell())
 REGISTER_INTERACTION_POTENTIAL(   "harmonic",   HarmonicPotential, GET_SETUP(), setup.params["omega"].as<double>())
 REGISTER_INTERACTION_POTENTIAL(     "dipole",     DipolePotential,  NO_SETUP())
-REGISTER_INTERACTION_POTENTIAL( "sutherland", SutherlandPotential, GET_SETUP(), setup.params["interaction_strength"].as<double>())
 
 /**************************************************************************//**
  * Register external potentials
@@ -101,7 +100,7 @@ REGISTER_EXTERNAL_POTENTIAL(        "graphenelut3d",         GrapheneLUT3DPotent
 REGISTER_EXTERNAL_POTENTIAL("graphenelut3dgenerate", GrapheneLUT3DPotentialGenerate, GET_SETUP(), setup.params["strain"].as<double>(), setup.params["poisson"].as<double>(), setup.params["carbon_carbon_dist"].as<double>(), setup.params["lj_sigma"].as<double>(), setup.params["lj_epsilon"].as<double>(), setup.params["k_max"].as<int>(), setup.params["xres"].as<int>(), setup.params["yres"].as<int>(), setup.params["zres"].as<int>(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("LeeBenzene2003", LeeBenzenePotential, GET_SETUP(), setup.get_cell())
 REGISTER_EXTERNAL_POTENTIAL("ShirkovBenzene2024", ShirkovBenzene, GET_SETUP(), setup.get_cell())
-REGISTER_EXTERNAL_POTENTIAL("GPPotential", GPPotential, GET_SETUP(), setup.get_cell(), setup.params["gp_training_file"].as<std::string>(), setup.params["gp_coefficient_file"].as<std::string>())
+REGISTER_EXTERNAL_POTENTIAL("gp_he_benzene", GPHeBenzenePotential, GET_SETUP(), setup.get_cell(), setup.gp_params, setup.params["gp_training_file"].as<std::string>(), setup.params["gp_coefficient_file"].as<std::string>())
 #endif
 
 // ---------------------------------------------------------------------------
@@ -361,44 +360,41 @@ double TabulatedPotential::direct(const DynamicArray<double,1> &VTable,
 /**************************************************************************//**
  * Constructor.
 ******************************************************************************/
-GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, const po::paramter_map &gp_params) {
+GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, const po::variables_map &gp_params) :
     kernelType(gp_params["KernelDetails.KernelType"].as<std::string>()),
     meanType(gp_params["KernelDetails.MeanType"].as<std::string>()),
     numTrainingPoints(gp_params["KernelDetails.NumPoints"].as<uint32>()),
+    sigma2(gp_params["KernelDetails.sigma2"].as<double>()),
     dataStandardMean(gp_params["Standardization.Mean"].as<double>()),
     dataStandardStd(gp_params["Standardization.Std"].as<double>()),
     μ(gp_params["MeanPar.value"].as<double>())
-
 {
+
     /* We populate the local vector variables using the parameter map */
     for (int i=0; i < NDIM; i++){
        ℓ[i] = gp_params["KernelDetails.ell"].as<std::vector<double>>()[i];
-       normOffset[i] = gp_params["KernelDetails.Offset"].as<std::vector<double>>()[i];
-       normScale[i]  = gp_params["KernelDetails.Scale"].as<std::vector<double>>()[i];
+       normOffset[i] = gp_params["Normalization.Offset"].as<std::vector<double>>()[i];
+       normScale[i]  = gp_params["Normalization.Scale"].as<std::vector<double>>()[i];
     }
 
     /* With all the variables, we are ready to instantiate the kernel */
     /* !!NOTE!! Later this should be switched to a factory dispatch as we get more kernels*/
     if (kernelType.find("matern") != std::string::npos)
-        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,gp_params["KernelDetails.MaternNu"].as<double>(),ℓ);
+        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,gp_params["KernelDetails.MaternNu"].as<std::vector<double>>()[0],ℓ);
     else 
         throw std::runtime_error("Currently only matern kernel is supported\n");
 
     /* Resize based on the number of training data points */
-    trainx.resize(numTrainingPoints);
+    trainX.resize(numTrainingPoints);
     KinvY.resize(numTrainingPoints);
-
-    double tempval = 0;
-    int p = 0;
-    int total = 0;
-    int j = 0;
 
     /* open the training data file */
     std::ifstream fin(gp_params["TrainingFile.Name"].as<std::string>(), std::ios::binary);
     if (!fin) {
-        throw std::runtime_error("Could not open GPPotential training file: " + gp_params["TrainingFile.Name"].as<std::string>());
+        throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + gp_params["TrainingFile.Name"].as<std::string>());
     }
 
+    /* data file has a row: x,y,z,K^{-1}Y,fidelity */
     std::array<double, 4> row;
     dVec trainPoint;
     for (int p = 0; p < numTrainingPoints; ++p) {
@@ -414,7 +410,6 @@ GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, con
     }
 
     fin.close();
-    
 }
 
 /**************************************************************************//**
@@ -422,27 +417,101 @@ GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, con
 ******************************************************************************/
 double GaussianProcessPotential::GP(const dVec &_r) {
 
-    std::array<double,4> new_nrm;
+    // Normalise the inference point
     dVec r;
-
-    // Normalise the new point
     r = (_r - normOffset)/normScale;
-
-    const double* newnrmptr = &new_nrm[0];
 
     // Accumulate k-vector dot product directly to avoid per-call temporary allocation.
     double kernelDot = 0.0;
-    for (int k =0; k < numPoints; k++)
+    for (int k =0; k < numTrainingPoints; k++)
         kernelDot += kernelPtr->K(r,trainX(k))*KinvY(k); 
     
     // Perform inference
-    double val_gp = μ + kernelDot;
+    double val_gp = μ + sigma2*kernelDot;
 
     // Unstandardise output
     val_gp = dataStandardMean + dataStandardStd*val_gp; 
 
     return val_gp;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MULTIFIDELITY GAUSSIAN PROCESS POTENTIAL CLASS ----------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//
+// !!NOTE!! We decided we don't need this for now. 
+
+/**************************************************************************//**
+ * Constructor.
+******************************************************************************/
+// MultiFidelityGaussianProcessPotential::MultiFidelityGaussianProcessPotential (const Container *_boxPtr, const po::variables_map &gp_params) :
+//     kernelType(gp_params["KernelDetails.KernelType"].as<std::string>()),
+//     meanType(gp_params["KernelDetails.MeanType"].as<std::string>()),
+//     numTrainingPoints(gp_params["KernelDetails.NumPoints"].as<uint32>()),
+//     dataStandardMean(gp_params["Standardization.Mean"].as<double>()),
+//     dataStandardStd(gp_params["Standardization.Std"].as<double>()),
+//     μ(gp_params["MeanPar.value"].as<double>()),
+//     numFidelity(gp_params["KernelDetails.MaternNu"].as<std::vector<double>().size())
+// {
+//     /* We populate the data offsets variables using the parameter map */
+//     for (int i=0; i < NDIM; i++){
+//        normOffset[i] = gp_params["KernelDetails.Offset"].as<std::vector<double>>()(i);
+//        normScale[i]  = gp_params["KernelDetails.Scale"].as<std::vector<double>>()(i);
+//     }
+
+//     /* With all the variables, we are ready to instantiate the kernel */
+//     /* !!NOTE!! Later this should be switched to a factory dispatch as we get more kernels*/
+//     std::vector<double> ν(numFidelity)
+//     for (int k=0; k < numFidelity; k++) {
+
+//         ν(k) = gp_params["KernelDetails.MaternNu"].as<std::vector<double>();
+
+//         /* Get the kernel length scale */
+//         for (int i=0; i < NDIM; i++) {
+//             _ℓ[i] = gp_params["KernelDetails.ell"].as<std::vector<double>>()(k*numKernels + i);
+//         }
+//         ℓ.push_back(_ℓ);
+
+//         /* instantiate the kernels */
+//         if (kernelType.find("matern") != std::string::npos)
+//             kernelPtrs.emplace_back(std::make_unique<MaternKernel>(_boxPtr,ν(k),ℓ(k));
+//         else 
+//             throw std::runtime_error("Currently only matern kernel is supported\n");
+//     }
+
+//     /* Resize based on the number of training data points */
+//     trainX.resize(numTrainingPoints);
+//     KinvY.resize(numTrainingPoints);
+//     fidelity.resize(numTrainingPoints);            
+
+//     /* open the training data file */
+//     std::ifstream fin(gp_params["TrainingFile.Name"].as<std::string>(), std::ios::binary);
+//     if (!fin) {
+//         throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + gp_params["TrainingFile.Name"].as<std::string>());
+//     }
+
+//     /* data file has a row: x,y,z,K^{-1}Y,fidelity */
+//     std::array<double, 5> row;
+//     dVec trainPoint;
+//     for (int p = 0; p < numTrainingPoints; ++p) {
+
+//         if (!fin.read(reinterpret_cast<char*>(row.data()), 5 * sizeof(double))) {
+//             throw std::runtime_error("Unexpected end of file while reading GP training data.");
+//         }
+
+//         /* load the training point */
+//         for (int i = 0; i < NDIM; ++i)
+//             trainPoint[i] = row[i];
+//         trainX[p] = trainPoint;
+
+//         KinvY[p] = row[NDIM];
+//         fidlity[p] = row[NDIM+1];
+//     }
+
+//     fin.close();
+// }
 
 
 // ---------------------------------------------------------------------------
@@ -5372,16 +5441,18 @@ double ShirkovBenzene::V(const dVec &r) {
 #if NDIM > 2
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// GPPotential Potential Class---------------------------------------------
+// GPHeBenzenePotential Potential Class---------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 /**************************************************************************//**
  * Constructor.
 ******************************************************************************/
-GPPotential::GPPotential (const Container *_boxPtr, const std::string &_trainingFile,
-        const std::string &_coefficientFile) : PotentialBase() {
-
+GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::variables_map &gp_params,  
+        const std::string &_trainingFile, const std::string &_coefficientFile) : 
+    PotentialBase(),
+    GPPotential(_boxPtr, gp_params)
+{
     boxPtr = _boxPtr;
 
     Lz = boxPtr->side[NDIM-1];
@@ -5406,7 +5477,7 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
     int j = 0;
     std::ifstream fin(_trainingFile, std::ios::binary);
     if (!fin) {
-        throw std::runtime_error("Could not open GPPotential training file: " + _trainingFile);
+        throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + _trainingFile);
     }
     while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
 	j = total % 4;
@@ -5423,10 +5494,10 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
     }
     fin.close();
     if ((total % 4) != 0) {
-        throw std::runtime_error("GPPotential training file does not contain a whole number of 4-double records: " + _trainingFile);
+        throw std::runtime_error("GPHeBenzenePotential training file does not contain a whole number of 4-double records: " + _trainingFile);
     }
     if (numPoints == 0) {
-        throw std::runtime_error("GPPotential training file is empty: " + _trainingFile);
+        throw std::runtime_error("GPHeBenzenePotential training file is empty: " + _trainingFile);
     }
     trainx.resizeAndPreserve(numPoints);   
     
@@ -5437,7 +5508,7 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
     prod.resize(16000);
     std::ifstream fin2(_coefficientFile, std::ios::binary);
     if (!fin2) {
-        throw std::runtime_error("Could not open GPPotential coefficient file: " + _coefficientFile);
+        throw std::runtime_error("Could not open GPHeBenzenePotential coefficient file: " + _coefficientFile);
     }
     while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
         numCoefficients++;
@@ -5448,10 +5519,10 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
     }
     fin2.close();
     if (numCoefficients == 0) {
-        throw std::runtime_error("GPPotential coefficient file is empty: " + _coefficientFile);
+        throw std::runtime_error("GPHeBenzenePotential coefficient file is empty: " + _coefficientFile);
     }
     if (numCoefficients != numPoints) {
-        throw std::runtime_error(str(format("GPPotential data size mismatch: %d training points in %s but %d coefficients in %s")
+        throw std::runtime_error(str(format("GPHeBenzenePotential data size mismatch: %d training points in %s but %d coefficients in %s")
                     % numPoints % _trainingFile % numCoefficients % _coefficientFile));
     }
     prod.resizeAndPreserve(numCoefficients);   
@@ -5472,22 +5543,12 @@ GPPotential::GPPotential (const Container *_boxPtr, const std::string &_training
                 sizeof(double) * flatGpuData.size(), gpStream));
     GPU_ASSERT(gpu_wait(gpStream));
 #endif
-
-
-    dVec ℓ1,ℓ2;
-    for (int i = 0; i < NDIM; i++){
-        ℓ1[i] = ell1[i];
-        ℓ2[i] = ell2[i];
-    }
-
-    kernelPtr1 = new MaternKernel(boxPtr,2.5,ℓ1);
-    kernelPtr2 = new MaternKernel(boxPtr,2.5,ℓ2);
 }
 
 /**************************************************************************//**
  * Destructor.
 ******************************************************************************/
-GPPotential::~GPPotential() {
+GPHeBenzenePotential::~GPHeBenzenePotential() {
 #ifdef USE_GPU
     if (d_trainx)
         GPU_ASSERT(gpu_free(d_trainx, gpStream));
@@ -5501,9 +5562,9 @@ GPPotential::~GPPotential() {
 }
 
 #ifdef USE_GPU
-void GPPotential::gpuV(const double* positions, double* values, int count) {
+void GPHeBenzenePotential::gpuV(const double* positions, double* values, int count) {
     if (count < 0)
-        throw std::runtime_error("GPPotential gpuV count must be non-negative.");
+        throw std::runtime_error("GPHeBenzenePotential gpuV count must be non-negative.");
     if (count == 0)
         return;
 
@@ -5547,13 +5608,14 @@ void GPPotential::gpuV(const double* positions, double* values, int count) {
  *  @param r the position of a helium particle
  *  @return GP-evaluated potential for Benzene-Helium
 ******************************************************************************/
-double GPPotential::V(const dVec &r) {
+double GPHeBenzenePotential::V(const dVec &r) {
     //Rotate the point 
     double x = r[0];
     double y = r[1];
     double z = r[2];
     double finx = 0;
     double finy = 0;
+
     //Reflect z 
     if (z <= 0) {z = -z;}    
     //Calculate angle
@@ -5581,54 +5643,32 @@ double GPPotential::V(const dVec &r) {
             finy = sin(rotateangle)*x + cos(rotateangle)*y;
         }
     } 
-    // Thus our rotatet points are now finx, finy and z
-    std::array<double,4> rp;
-    rp[0] = finx;
-    rp[1] = finy;
-    rp[2] = z;
-    rp[3] = 1.0;
+
+    // NEW GP
+    dVec infr;
+    infr[0] = finx;
+    infr[1] = finy;
+    infr[2] = z;
     double rho = sqrt(finx*finx + finy*finy);
     if (rho < 3 && z < 2) {
         return 10000; //Hardcoded cutoff
     }
-    std::array<double,4> new_nrm;
-    //Normalise the new point
-    new_nrm = (rp - xoffset)/xscale;
-    const double* newnrmptr = &new_nrm[0];
-    //for (int i = 0; i < 4; i++) {
-    //    new_nrm(i) = (rp(i) - xoffset[i])/xscale[i];
-    //}
-    // Accumulate k-vector dot product directly to avoid per-call temporary allocation.
-    double kernelDot = 0.0;
-    for (int k =0; k < numPoints; k++) {
-	const double* kpr = &trainx(k)[0];
-        kernelDot += kernel(kpr,newnrmptr) * prod(k);
-        //for (int i = 0; i < 4; i++) {
-            //std::cout<<k<<","<<i<<","<<trainx(k)(i) << "," <<new_nrm(i) << std::endl;
-        //}
-    }   
-    //Obtain the inference 
-    double val_gp = mean + kernelDot;
-    //std::cout<<x<<","<<y<<","<<z<<std::endl;
-    //for (int k = 0; k < numPoints; k++) {
-    //	std::cout<<kvec(k)<<","<<prod(k)<<","<<std::endl;
-    //}
-    //std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << mean<<"," <<val_gp<<std::endl;
-    //Unstandardise output
-    val_gp = meany + stdy*val_gp; 
+    
+    /* Obtain the GP inferred value */
+    double val_gp = GPPotential.GP(infr);
+
     //Add long-range part
-    double rnorm = sqrt(finx*finx + finy*finy + z*z);
+    double rnorm = sqrt(dot(infr,infr));
     double h_long = 1.0 / (1.0 + std::exp(-gama * (rnorm - r0)));
+
     if (rho > 5 || z > 6.5) {
 	val = (1 - h_long)*val_gp + h_long*long_range(finx,finy,z); 
     } else {
         val = val_gp;
-    	//std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << val_gp/0.695 << "," << val << std::endl; 
     }		
 
     //Convert to Kelvin
     val = val/0.695;
-    //std::cout << x << "," << y << "," << z << "," << finx << "," << finy << "," << val_gp/0.695 << "," << long_range(finx,finy,z) << "," << val << std::endl; 
     return val;
 }
 #endif

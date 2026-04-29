@@ -45,12 +45,6 @@ GaussianProcessKernelBase::GaussianProcessKernelBase (const Container * _boxPtr,
     // empty constructor
 }
 
-/**************************************************************************//**
- *  Empty base constructor.
-******************************************************************************/
-GaussianProcessKernelBase::~GaussianProcessKernelBase () {
-    // empty destructor
-}
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -68,12 +62,6 @@ MaternKernel::MaternKernel(const Container* _boxPtr, const double _ν, const dVe
    invℓ = 1.0/ℓ;
 }
 
-/**************************************************************************//**
- * Destructor.
-******************************************************************************/
-MaternKernel::~MaternKernel() {
-    // empty destructor
-}
 
 /**************************************************************************//**
  * Choose the appropriate kernel based on the value of nu
