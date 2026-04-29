@@ -11,6 +11,9 @@
 
 #include "common.h"
 #include "constants.h"
+#include "gpkernel.h"
+#include <boost/program_options.hpp>
+
 #ifdef USE_GPU
 #include "common_gpu.h"
 #endif
@@ -18,6 +21,8 @@
 class Path;
 class LookupTable;
 class Container;
+
+namespace po = boost::program_options;
 
 // ========================================================================  
 // PotentialBase Class
@@ -117,6 +122,84 @@ class TabulatedPotential {
         virtual double valued2Vdr2 (const double) = 0;                  
     
 };
+
+// ========================================================================  
+// GaussianProcessPotential Class
+// ========================================================================  
+/** 
+ * A generic Gaussian Process potential.
+ *
+ * Given a kernel, implements GP inference. 
+ */
+class GaussianProcessPotential {
+
+    public:
+        GaussianProcessPotential(const Container*, const po::variables_map &);
+        virtual ~GaussianProcessPotential() = default;
+
+        double GP(const dVec&);
+
+    protected:
+        std::unique_ptr<GaussianProcessKernelBase> kernelPtr; // the acutal kernel
+        DynamicArray<dVec,1> trainX;                // Normalized training data points
+        DynamicArray<double,1> KinvY;               // The right hand vector K^{-1}(Y -μ) where Y is standardised 
+
+    private:
+        std::string kernelType;         // the type of kernel (e.g. matern)
+        std::string meanType;           // the type of mean (e.g. constant)
+        dVec ℓ;                         // the length scale hyperparameter
+        uint32 numTrainingPoints;       // Number of training points
+
+        dVec normOffset;                // normalization offset             
+        dVec normScale;                 // normalization scale
+
+        double dataStandardMean;        // data standardization mean
+        double dataStandardStd;         // data standardization standard deviation
+        double sigma2;                  // the scale of the kernel σ² 
+                            
+        double μ;                       // the GP mean
+};
+
+// ========================================================================  
+// MultiFidelityGaussianProcessPotential Class
+// ========================================================================  
+// !!NOTE!! We decided we don't need this for now. 
+/** 
+ * A Multifidelity Gaussian Process potential.
+ *
+ * Given kernel, implements MFGP inference. 
+ */
+// class MultiFidelityGaussianProcessPotential {
+
+//     public:
+//         MultiFidelityGaussianProcessPotential(const Container*, const po::variables_map &);
+//         virtual ~MultiFidelityGaussianProcessPotential() = default;
+
+//         double GP(const dVec&);
+
+//     protected:
+//         std::vector<std::unique_ptr<GaussianProcessKernelBase>> kernelPtrs; // pointers to the needed kernels
+//         DynamicArray<dVec,1> trainX;                // Normalized training data points
+//         DynamicArray<double,1> KinvY;               // The right hand vector K^{-1}(Y -μ) where Y is standardised 
+//         DynamicArray<double,1> fidelity;            // The fidelity associated with each point
+
+//     private:
+//         std::string kernelType;         // the type of kernel (e.g. matern)
+//         std::string meanType;           // the type of mean (e.g. constant)
+//         std::vector<dVec> ℓ;            // the length scale hyperparameter (for each fidelity)
+//         uint32 numTrainingPoints;       // Number of training points
+
+//         dVec normOffset;                // normalization offset             
+//         dVec normScale;                 // normalization scale
+
+//         double dataStandardMean;        // data standardization mean
+//         double dataStandardStd;         // data standardization standard deviation
+//         double MFPower;                 // relative power in multifidelity kernel
+                            
+//         double μ;                       // the GP mean
+                                        
+//         uint32 numFidelity;             // The number of kernels
+// };
 
 // ========================================================================  
 // FreePotential Class
@@ -396,7 +479,6 @@ class DipolePotential : public PotentialBase  {
             return 6.0/(x*x*x*x*x);
         }
 };
-
 
 #if NDIM > 2
 // ========================================================================  
@@ -729,7 +811,6 @@ class AzizPotential : public PotentialBase, public TabulatedPotential {
                     - D*ix + 2.0) * exp(-(D*ix - 1.0)*(D*ix - 1.0));
             return (x < D ? r : 0.0 );
         }
-
 };
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -1308,7 +1389,6 @@ private:
     double dWdxi(double yt, double dxt);
     double dWddxt(double yt, double dxt);
 };
-
 
 // ========================================================================  
 // Hard Rod Potential Class
@@ -2073,17 +2153,19 @@ inline std::vector<std::vector<double>> ShirkovBenzene::generate_benzene_geometr
  * Author: Sutirtha Paul
  * 
  */
-class GPPotential: public PotentialBase  {
+class GPHeBenzenePotential: public PotentialBase  {
 
     public:
-        GPPotential(const Container*, const std::string&, const std::string&);
-        ~GPPotential();
+        GPHeBenzenePotential(const Container*, const po::variables_map &, const std::string &, const std::string &);
+        ~GPHeBenzenePotential();
 
         double V(const dVec &r);
 #ifdef USE_GPU
         void gpuV(const double*, double*, int);
 #endif
     private:
+        GaussianProcessPotential GPPotential;
+
         const Container *boxPtr;
         double Lz;
         double Lx;
@@ -2105,7 +2187,6 @@ class GPPotential: public PotentialBase  {
 	const double mean = 22.0553313;
 	const double meany = 8.64215696;
 	const double stdy = 104.91133484;
-
 
 	//Long-range parameters
 	const double r0       = 5.765366674e+00;
@@ -2139,44 +2220,18 @@ class GPPotential: public PotentialBase  {
         int gpuBufferCapacity = 0;
 #endif
 
-	double matern_kernel(const double*, const double*, const std::array<double,3>);
-        double kernel(const double*, const double*);
 	double deg2rad(double);
 	double rad2deg(double);
 	double long_range(double,double,double);
 };
-inline double GPPotential::matern_kernel(const double* x1, const double* x2, const std::array<double,3> inv_ell) {
-    //Calculate scaled distance between points
-    double sep = 0;
-    auto dx0 = (x1[0] - x2[0]) * inv_ell[0];
-    auto dx1 = (x1[1] - x2[1]) * inv_ell[1];
-    auto dx2 = (x1[2] - x2[2]) * inv_ell[2];
-    sep = dx0*dx0 + dx1*dx1 + dx2*dx2;
-    
-    double sep12 = sqrt(sep);
-    //std::cout << tsep" << sep << std::endl;
-    double val = (1 + sqrt5*sep12 + 5*(sep/3))*exp(-sqrt5*sep12);
-    return val;
-}
-inline double GPPotential::kernel(const double* x1, const double* x2) {
-    int z1 = x1[3];
-    int z2 = x2[3];
-    
-    double bias_factor = (1 - z1)*(1-z2)*std::pow((1+z1*z2),power);
-    double k1 = matern_kernel(x1,x2,inv_ell1);
-    double k2 = matern_kernel(x1,x2,inv_ell2);
-    //std::cout << bias_factor << "," << k1 << "," << k2 << std::endl;
-    double covar_val = oscale*(k1 + bias_factor*k2);
-    return covar_val;
 
-}
-inline double GPPotential::deg2rad(double ang) {
+inline double GPHeBenzenePotential::deg2rad(double ang) {
     return (ang*M_PI)/180.0;
 }
-inline double GPPotential::rad2deg(double ang) {
+inline double GPHeBenzenePotential::rad2deg(double ang) {
     return (ang*180.0)/M_PI;
 }
-inline double GPPotential::long_range(double x, double y, double z) {
+inline double GPHeBenzenePotential::long_range(double x, double y, double z) {
 
     double rnorm = std::sqrt(x * x + y * y + z * z);
     double ph0 = std::atan2(y, x);

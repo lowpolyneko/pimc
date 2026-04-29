@@ -314,6 +314,9 @@ class Setup {
                 boost::ptr_vector<ActionBase> &, MTRand&);
 
         Parameters params;                          ///< All simulation parameters
+                                                    
+	/* INI file map */
+   	po::variables_map gp_params;
 
     private:
         Setup();
@@ -360,7 +363,8 @@ class Setup {
         void initParameters();
 
         /* Get a formatted list of xml options */
-        std::string getXMLOptionList(const std::vector<std::string> &, const std::string);  
+        std::string getXMLOptionList(const std::vector<std::string> &, const std::string); 
+
 };
 
 #endif
