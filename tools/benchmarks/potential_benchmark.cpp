@@ -1,11 +1,18 @@
 #include "common.h"
+#include "action.h"
 #include "container.h"
 #include "factory_potential.h"
+#include "lookuptable.h"
+#include "path.h"
 #include "potential.h"
 #include "setup.h"
+#include "wavefunction.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 
 namespace {
@@ -19,6 +26,8 @@ struct BenchmarkOptions {
     double minRadius = 0.25;
     double maxRadius = 5.0;
     bool gpu = false;
+    bool checkBatch = false;
+    bool checkGpu = false;
     bool list = false;
     bool help = false;
 };
@@ -77,12 +86,15 @@ void printHelp(const char* exe)
         << "  --benchmark-list                 list registered potentials\n"
         << "  --benchmark-kind KIND            interaction or external\n"
         << "  --benchmark-potential NAME       potential to instantiate\n"
-        << "  --benchmark-method METHOD        value, gradient, pair, or all\n"
+        << "  --benchmark-method METHOD        value, gradient, pair, action, or all\n"
         << "  --benchmark-iterations N         calls per measured method [1000000]\n"
         << "  --benchmark-samples N            generated sample positions [4096]\n"
         << "  --benchmark-min R                minimum sample radius [0.25]\n"
         << "  --benchmark-max R                maximum sample radius [5.0]\n\n"
-        << "  --benchmark-gpu                  use GPPotential batched GPU value path\n\n"
+        << "  --benchmark-gpu                  use the batched value path in GPU builds\n\n"
+        << "  --benchmark-check-batch          compare public batched V calls to scalar V\n"
+        << "  --benchmark-check-gpu            compare batched V, using GPU build, to scalar V\n"
+        << "  --benchmark-tolerance X          relative/absolute check tolerance [1e-9]\n\n"
         << "Any remaining options are passed through the normal PIMC setup parser.\n"
         << "The benchmark supplies defaults for size, temperature, particle count,\n"
         << "time slices, tube radius, and common LJ/Gasparini parameters.\n";
@@ -114,6 +126,29 @@ std::vector<dVec> makeSamples(std::size_t count, double minRadius,
     return samples;
 }
 
+void appendGpuCheckSamples(std::vector<dVec>& samples)
+{
+#if NDIM > 2
+    const double coords[][NDIM] = {
+        {0.1, 0.2, 1.0},
+        {3.1, 0.0, 1.9},
+        {-4.0, 2.5, -3.0},
+        {5.5, 0.25, 6.75},
+        {-6.0, -3.0, 7.5},
+        {0.0, 6.5, -6.6},
+    };
+
+    for (const auto& coord : coords) {
+        dVec r{};
+        for (int d = 0; d < NDIM; ++d)
+            r[d] = coord[d];
+        samples.push_back(r);
+    }
+#else
+    (void)samples;
+#endif
+}
+
 template <typename Func>
 void runTimed(const std::string& label, std::size_t iterations, Func func)
 {
@@ -134,11 +169,83 @@ void runTimed(const std::string& label, std::size_t iterations, Func func)
               << std::endl;
 }
 
+double comparisonScale(double expected)
+{
+    return std::max(1.0, std::fabs(expected));
+}
+
+int checkBatchedValues(PotentialBase& potential, const std::vector<dVec>& samples,
+        double tolerance)
+{
+    std::vector<double> expected(samples.size());
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        expected[i] = potential.V(samples[i]);
+
+    std::vector<double> actual(samples.size());
+    potential.V(samples.data(), actual.data(), static_cast<int>(samples.size()));
+
+    double maxAbsDiff = 0.0;
+    double maxRelDiff = 0.0;
+    std::size_t worst = 0;
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const double absDiff = std::fabs(actual[i] - expected[i]);
+        const double relDiff = absDiff / comparisonScale(expected[i]);
+        if (relDiff > maxRelDiff) {
+            maxRelDiff = relDiff;
+            maxAbsDiff = absDiff;
+            worst = i;
+        }
+        if (absDiff > tolerance && relDiff > tolerance) {
+            std::cerr << "error: batched V mismatch at sample " << i
+                      << " expected=" << std::setprecision(17) << expected[i]
+                      << " actual=" << std::setprecision(17) << actual[i]
+                      << " abs_diff=" << absDiff
+                      << " rel_diff=" << relDiff
+                      << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
+
+    const std::size_t batchSizes[] = {1, 2, 3, 7, 16, 64, 257};
+    std::vector<double> batchActual(samples.size());
+    for (const auto batchSize : batchSizes) {
+        for (std::size_t begin = 0; begin < samples.size(); begin += batchSize) {
+            const std::size_t n = std::min(batchSize, samples.size() - begin);
+            potential.V(samples.data() + begin, batchActual.data() + begin,
+                    static_cast<int>(n));
+        }
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            const double absDiff = std::fabs(batchActual[i] - expected[i]);
+            const double relDiff = absDiff / comparisonScale(expected[i]);
+            if (absDiff > tolerance && relDiff > tolerance) {
+                std::cerr << "error: batched V mismatch with batch_size=" << batchSize
+                          << " at sample " << i
+                          << " expected=" << std::setprecision(17) << expected[i]
+                          << " actual=" << std::setprecision(17) << batchActual[i]
+                          << " abs_diff=" << absDiff
+                          << " rel_diff=" << relDiff
+                          << std::endl;
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
+    std::cout << "batch correctness check passed"
+              << " samples=" << samples.size()
+              << " tolerance=" << std::setprecision(3) << tolerance
+              << " max_abs_diff=" << std::setprecision(12) << maxAbsDiff
+              << " max_rel_diff=" << std::setprecision(12) << maxRelDiff
+              << " worst_sample=" << worst
+              << std::endl;
+    return EXIT_SUCCESS;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
 {
     BenchmarkOptions bench;
+    double checkTolerance = 1.0e-9;
     std::vector<std::string> setupArgs;
     setupArgs.push_back(argv[0]);
 
@@ -151,6 +258,12 @@ int main(int argc, char* argv[])
             } else if (arg == "--benchmark-list") {
                 bench.list = true;
             } else if (arg == "--benchmark-gpu") {
+                bench.gpu = true;
+            } else if (arg == "--benchmark-check-batch") {
+                bench.checkBatch = true;
+            } else if (arg == "--benchmark-check-gpu") {
+                bench.checkGpu = true;
+                bench.checkBatch = true;
                 bench.gpu = true;
             } else if (isBenchmarkOption(arg, "--benchmark-kind")) {
                 bench.kind = optionValue(arg, "--benchmark-kind", i, argc, argv);
@@ -166,6 +279,8 @@ int main(int argc, char* argv[])
                 bench.minRadius = std::stod(optionValue(arg, "--benchmark-min", i, argc, argv));
             } else if (isBenchmarkOption(arg, "--benchmark-max")) {
                 bench.maxRadius = std::stod(optionValue(arg, "--benchmark-max", i, argc, argv));
+            } else if (isBenchmarkOption(arg, "--benchmark-tolerance")) {
+                checkTolerance = std::stod(optionValue(arg, "--benchmark-tolerance", i, argc, argv));
             } else {
                 setupArgs.push_back(arg);
             }
@@ -193,12 +308,14 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
     if (bench.method != "value" && bench.method != "gradient" &&
-            bench.method != "pair" && bench.method != "all") {
-        std::cerr << "error: --benchmark-method must be value, gradient, pair, or all" << std::endl;
+            bench.method != "pair" && bench.method != "action" &&
+            bench.method != "all") {
+        std::cerr << "error: --benchmark-method must be value, gradient, pair, action, or all" << std::endl;
         return EXIT_FAILURE;
     }
     if (bench.iterations == 0 || bench.samples == 0 ||
-            bench.minRadius <= 0.0 || bench.maxRadius <= bench.minRadius) {
+            bench.minRadius <= 0.0 || bench.maxRadius <= bench.minRadius ||
+            checkTolerance <= 0.0 || !std::isfinite(checkTolerance)) {
         std::cerr << "error: invalid benchmark sampling parameters" << std::endl;
         return EXIT_FAILURE;
     }
@@ -261,12 +378,9 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    const auto samples = makeSamples(bench.samples, bench.minRadius, bench.maxRadius);
-    std::vector<double> flatSamples(samples.size() * NDIM);
-    for (std::size_t i = 0; i < samples.size(); ++i) {
-        for (int d = 0; d < NDIM; ++d)
-            flatSamples[NDIM * i + d] = samples[i][d];
-    }
+    auto samples = makeSamples(bench.samples, bench.minRadius, bench.maxRadius);
+    if (bench.checkBatch)
+        appendGpuCheckSamples(samples);
 
     std::cout << "potential=" << bench.potential
               << " kind=" << bench.kind
@@ -280,18 +394,24 @@ int main(int argc, char* argv[])
 #endif
               << std::endl;
 
+    if (bench.checkBatch) {
+        if (bench.checkGpu) {
+#ifdef USE_GPU
+#else
+            std::cerr << "error: --benchmark-check-gpu requires a GPU-enabled build" << std::endl;
+            return EXIT_FAILURE;
+#endif
+        }
+        return checkBatchedValues(*potential, samples, checkTolerance);
+    }
+
     if (bench.method == "value" || bench.method == "all") {
 #ifdef USE_GPU
         if (bench.gpu) {
-            auto* gp = dynamic_cast<GPPotential*>(potential.get());
-            if (!gp) {
-                std::cerr << "error: --benchmark-gpu is only supported for GPPotential" << std::endl;
-                return EXIT_FAILURE;
-            }
             std::vector<double> values(samples.size());
             runTimed("gpuV(r)", bench.iterations, [&](std::size_t i) {
                 if ((i % samples.size()) == 0)
-                    gp->gpuV(flatSamples.data(), values.data(), static_cast<int>(samples.size()));
+                    potential->V(samples.data(), values.data(), static_cast<int>(samples.size()));
                 return values[i % samples.size()];
             });
         } else
@@ -317,6 +437,33 @@ int main(int argc, char* argv[])
         runTimed("V(r,r2)", bench.iterations, [&](std::size_t i) {
             return potential->V(samples[i % samples.size()],
                     samples[(i + 1) % samples.size()]);
+        });
+    }
+
+    if (bench.method == "action" || bench.method == "all") {
+        MTRand random(1234);
+        Container* boxPtr = setup.get_cell();
+        std::unique_ptr<PotentialBase> interaction(setup.interactionPotential());
+        DynamicArray<dVec,1> initialPos =
+            potential->initialConfig(boxPtr, random, constants()->initialNumParticles());
+        LookupTable lookup(boxPtr, constants()->numTimeSlices(),
+                constants()->initialNumParticles());
+        Path path(boxPtr, lookup, constants()->numTimeSlices(),
+                initialPos, constants()->numBroken());
+        std::unique_ptr<WaveFunctionBase> waveFunction(setup.waveFunction(path, lookup));
+        std::unique_ptr<ActionBase> action(setup.action(path, lookup, potential.get(),
+                    interaction.get(), waveFunction.get()));
+
+        runTimed("actionV(slice)", bench.iterations, [&](std::size_t i) {
+            const auto value = action->potential(
+                    static_cast<int>(i % constants()->numTimeSlices()));
+            return value[0] + value[1];
+        });
+
+        beadLocator startBead = {0, 0};
+        beadLocator endBead = {constants()->numTimeSlices() - 1, 0};
+        runTimed("actionU(range)", bench.iterations, [&](std::size_t) {
+            return action->potentialAction(startBead, endBead);
         });
     }
 

@@ -11,6 +11,152 @@
 #include "lookuptable.h"
 #include "wavefunction.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+
+namespace {
+
+bool envFlagEnabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    return value && value[0] != '\0' && value[0] != '0';
+}
+
+bool batchExternalPotentialEnabled()
+{
+    return !envFlagEnabled("PIMC_DISABLE_BATCHED_POTENTIAL");
+}
+
+bool checkBatchedExternalPotential()
+{
+    return envFlagEnabled("PIMC_CHECK_BATCHED_POTENTIAL");
+}
+
+bool printBatchedExternalPotentialStats()
+{
+    return envFlagEnabled("PIMC_BATCHED_POTENTIAL_STATS");
+}
+
+struct BatchedPotentialStats {
+    long long calls = 0;
+    long long positions = 0;
+    double seconds = 0.0;
+
+    ~BatchedPotentialStats()
+    {
+        if (printBatchedExternalPotentialStats()) {
+            std::cerr << "batched_external_potential calls=" << calls
+                      << " positions=" << positions
+                      << " seconds=" << seconds
+                      << std::endl;
+        }
+    }
+};
+
+BatchedPotentialStats& batchedPotentialStats()
+{
+    static BatchedPotentialStats stats;
+    return stats;
+}
+
+struct ActionCallStats {
+    long long localScalarCalls = 0;
+    long long localScalarActive = 0;
+    long long localRangeCalls = 0;
+    long long localRangeActive = 0;
+    long long localListCalls = 0;
+    long long localListActive = 0;
+    long long bareScalarCalls = 0;
+    long long bareScalarActive = 0;
+    long long bareListCalls = 0;
+    long long bareListActive = 0;
+    long long correctionRangeCalls = 0;
+    long long correctionRangeBeads = 0;
+    long long baseRangeCalls = 0;
+    long long baseRangeBeads = 0;
+    long long nonLocalScalarCalls = 0;
+    long long nonLocalScalarActive = 0;
+
+    ~ActionCallStats()
+    {
+        if (envFlagEnabled("PIMC_ACTION_CALL_STATS")) {
+            std::cerr << "action_call_stats"
+                      << " local_scalar_calls=" << localScalarCalls
+                      << " local_scalar_active=" << localScalarActive
+                      << " local_range_calls=" << localRangeCalls
+                      << " local_range_active=" << localRangeActive
+                      << " local_list_calls=" << localListCalls
+                      << " local_list_active=" << localListActive
+                      << " bare_scalar_calls=" << bareScalarCalls
+                      << " bare_scalar_active=" << bareScalarActive
+                      << " bare_list_calls=" << bareListCalls
+                      << " bare_list_active=" << bareListActive
+                      << " correction_range_calls=" << correctionRangeCalls
+                      << " correction_range_beads=" << correctionRangeBeads
+                      << " base_range_calls=" << baseRangeCalls
+                      << " base_range_beads=" << baseRangeBeads
+                      << " nonlocal_scalar_calls=" << nonLocalScalarCalls
+                      << " nonlocal_scalar_active=" << nonLocalScalarActive
+                      << std::endl;
+        }
+    }
+};
+
+ActionCallStats& actionCallStats()
+{
+    static ActionCallStats stats;
+    return stats;
+}
+
+double comparisonScale(double expected)
+{
+    return std::max(1.0, std::abs(expected));
+}
+
+void evaluateExternalPotential(PotentialBase* potential,
+        const std::vector<dVec>& positions, std::vector<double>& values)
+{
+    values.resize(positions.size());
+    if (positions.empty())
+        return;
+
+    auto& stats = batchedPotentialStats();
+    const auto start = std::chrono::steady_clock::now();
+    if (batchExternalPotentialEnabled()) {
+        potential->V(positions.data(), values.data(), static_cast<int>(positions.size()));
+    } else {
+        for (std::size_t i = 0; i < positions.size(); ++i)
+            values[i] = potential->V(positions[i]);
+    }
+    const auto stop = std::chrono::steady_clock::now();
+    stats.calls += 1;
+    stats.positions += static_cast<long long>(positions.size());
+    stats.seconds += std::chrono::duration<double>(stop - start).count();
+
+    if (checkBatchedExternalPotential() && batchExternalPotentialEnabled()) {
+        for (std::size_t i = 0; i < positions.size(); ++i) {
+            const double scalarValue = potential->V(positions[i]);
+            const double absDiff = std::abs(values[i] - scalarValue);
+            const double relDiff = absDiff / comparisonScale(scalarValue);
+            if (absDiff > 1.0e-9 && relDiff > 1.0e-9) {
+                std::cerr << "batched external potential mismatch"
+                          << " index=" << i
+                          << " scalar=" << scalarValue
+                          << " batched=" << values[i]
+                          << " abs_diff=" << absDiff
+                          << " rel_diff=" << relDiff
+                          << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+        }
+    }
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ACTION BASE CLASS --------------------------------------------------------
@@ -239,13 +385,33 @@ double ActionBase::potentialAction (const beadLocator &startBead,
         const beadLocator &endBead) {
 
     double totU = 0.0;
+    int numBeads = 0;
     beadLocator beadIndex;
     beadIndex = startBead;
     do {
         totU += potentialAction(beadIndex);
+        ++numBeads;
         beadIndex = path.next(beadIndex);
     } while (!all(beadIndex, path.next(endBead)));
+    actionCallStats().baseRangeCalls += 1;
+    actionCallStats().baseRangeBeads += numBeads;
     return totU;
+}
+
+double ActionBase::potentialAction (const std::vector<beadLocator> &beads) {
+
+    double totU = 0.0;
+    for (const auto& bead : beads)
+        totU += potentialAction(bead);
+    return totU;
+}
+
+void ActionBase::barePotentialAction (const std::vector<beadLocator> &beads,
+        std::vector<double> &values) {
+
+    values.resize(beads.size());
+    for (std::size_t i = 0; i < beads.size(); ++i)
+        values[i] = barePotentialAction(beads[i]);
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +488,9 @@ double LocalAction::potentialAction (const beadLocator &beadIndex) {
 
     double bareU = 0.0;
     double corU = 0.0;
+    actionCallStats().localScalarCalls += 1;
+    if (path.worm.beadOn(beadIndex))
+        actionCallStats().localScalarActive += 1;
     eo = (beadIndex[0] % 2);
 
     /* We first compute the base potential action piece */
@@ -345,12 +514,122 @@ double LocalAction::potentialAction (const beadLocator &beadIndex) {
 }
 
 /**************************************************************************//**
+ *  Return the potential action for a connected range of beads.
+ *
+ *  This batches the external potential over the whole bead range while keeping
+ *  the existing nearest-neighbor interaction and correction calculations.
+******************************************************************************/
+double LocalAction::potentialAction (const beadLocator &startBead,
+        const beadLocator &endBead) {
+
+    std::vector<beadLocator> activeBeads;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
+
+    beadLocator beadIndex = startBead;
+    do {
+        if (path.worm.beadOn(beadIndex)) {
+            activeBeads.push_back(beadIndex);
+            const beadState state = path.worm.getState(beadIndex);
+            externalPositions.push_back(path(beadIndex));
+            externalFactors.push_back(path.worm.factor(state));
+        }
+        beadIndex = path.next(beadIndex);
+    } while (!all(beadIndex, path.next(endBead)));
+
+    actionCallStats().localRangeCalls += 1;
+    actionCallStats().localRangeActive += static_cast<long long>(activeBeads.size());
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+
+    double totU = 0.0;
+    for (std::size_t i = 0; i < activeBeads.size(); ++i) {
+        const beadLocator& bead = activeBeads[i];
+        eo = (bead[0] % 2);
+
+        double bareU = VFactor[eo] * tau() *
+            Vnn(bead, externalFactors[i] * externalValues[i]);
+        double corU = 0.0;
+
+        if ((shift == 1) && (gradVFactor[eo] > EPS))
+            corU = gradVFactor[eo] * tau() * tau() * tau() *
+                constants()->lambda() * gradVnnSquared(bead);
+
+#if PIGS
+        if ((bead[0] == 0) || (bead[0] == (constants()->numTimeSlices() - 1))) {
+            bareU *= 0.5 * endFactor;
+            bareU -= log(waveFunctionPtr->PsiTrial(bead[0]));
+        }
+#endif
+
+        totU += bareU + corU;
+    }
+
+    return totU;
+}
+
+double LocalAction::potentialAction (const std::vector<beadLocator> &beads) {
+
+    std::vector<beadLocator> activeBeads;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
+    activeBeads.reserve(beads.size());
+    externalPositions.reserve(beads.size());
+    externalFactors.reserve(beads.size());
+
+    for (const auto& bead : beads) {
+        if (path.worm.beadOn(bead)) {
+            activeBeads.push_back(bead);
+            const beadState state = path.worm.getState(bead);
+            externalPositions.push_back(path(bead));
+            externalFactors.push_back(path.worm.factor(state));
+        }
+    }
+
+    actionCallStats().localListCalls += 1;
+    actionCallStats().localListActive += static_cast<long long>(activeBeads.size());
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+
+    double totU = 0.0;
+    for (std::size_t i = 0; i < activeBeads.size(); ++i) {
+        const beadLocator& bead = activeBeads[i];
+        eo = (bead[0] % 2);
+
+        double bareU = VFactor[eo] * tau() *
+            Vnn(bead, externalFactors[i] * externalValues[i]);
+        double corU = 0.0;
+
+        if ((shift == 1) && (gradVFactor[eo] > EPS))
+            corU = gradVFactor[eo] * tau() * tau() * tau() *
+                constants()->lambda() * gradVnnSquared(bead);
+
+#if PIGS
+        if ((bead[0] == 0) || (bead[0] == (constants()->numTimeSlices() - 1))) {
+            bareU *= 0.5 * endFactor;
+            bareU -= log(waveFunctionPtr->PsiTrial(bead[0]));
+        }
+#endif
+
+        totU += bareU + corU;
+    }
+
+    return totU;
+}
+
+/**************************************************************************//**
  *  Return the bare potential action for a single bead indexed with beadIndex.  
  *
  *  This action corresponds to the primitive approximation and may be used
  *  when attempting updates that use single slice rejection.
 ******************************************************************************/
 double LocalAction::barePotentialAction (const beadLocator &beadIndex) {
+
+    actionCallStats().bareScalarCalls += 1;
+    if (path.worm.beadOn(beadIndex))
+        actionCallStats().bareScalarActive += 1;
 
     double bareU = VFactor[beadIndex[0]%2]*tau()*Vnn(beadIndex);
 
@@ -363,6 +642,50 @@ double LocalAction::barePotentialAction (const beadLocator &beadIndex) {
 #endif
 
     return bareU;
+}
+
+void LocalAction::barePotentialAction (const std::vector<beadLocator> &beads,
+        std::vector<double> &values) {
+
+    std::vector<std::size_t> activeIndices;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
+    values.assign(beads.size(), 0.0);
+    activeIndices.reserve(beads.size());
+    externalPositions.reserve(beads.size());
+    externalFactors.reserve(beads.size());
+
+    for (std::size_t i = 0; i < beads.size(); ++i) {
+        const auto& bead = beads[i];
+        if (path.worm.beadOn(bead)) {
+            activeIndices.push_back(i);
+            const beadState state = path.worm.getState(bead);
+            externalPositions.push_back(path(bead));
+            externalFactors.push_back(path.worm.factor(state));
+        }
+    }
+
+    actionCallStats().bareListCalls += 1;
+    actionCallStats().bareListActive += static_cast<long long>(activeIndices.size());
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+
+    for (std::size_t active = 0; active < activeIndices.size(); ++active) {
+        const std::size_t i = activeIndices[active];
+        const beadLocator& bead = beads[i];
+        double bareU = VFactor[bead[0] % 2] * tau() *
+            Vnn(bead, externalFactors[active] * externalValues[active]);
+
+#if PIGS
+        if ((bead[0] == 0) || (bead[0] == (constants()->numTimeSlices() - 1))) {
+            bareU *= 0.5 * endFactor;
+            bareU -= log(waveFunctionPtr->PsiTrial(bead[0]));
+        }
+#endif
+
+        values[i] = bareU;
+    }
 }
 
 /**************************************************************************//**
@@ -401,12 +724,17 @@ double LocalAction::potentialActionCorrection (const beadLocator &startBead,
         const beadLocator &endBead) {
 
     double corU = 0.0;
+    int numBeads = 0;
     beadLocator beadIndex;
     beadIndex = startBead;
     do {
         corU += potentialActionCorrection(beadIndex);
+        ++numBeads;
         beadIndex = path.next(beadIndex);
     } while (!all(beadIndex, path.next(endBead)));
+
+    actionCallStats().correctionRangeCalls += 1;
+    actionCallStats().correctionRangeBeads += numBeads;
 
     return corU;
 }
@@ -575,11 +903,16 @@ std::array<double,2> LocalAction::V(const int slice) {
 
     double totVint = 0.0;
     double totVext = 0.0;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
 
     beadLocator bead1;
     bead1[0] = bead2[0] = slice;
 
     int numParticles = path.numBeadsAtSlice(slice);
+    externalPositions.reserve(numParticles);
+    externalFactors.reserve(numParticles);
 
     /* Initialize the separation histogram */
     sepHist.fill(0);
@@ -591,8 +924,9 @@ std::array<double,2> LocalAction::V(const int slice) {
             /* Get the state of bead 1 */
             beadState state1 = path.worm.getState(bead1);
 
-            /* Evaluate the external potential */
-            totVext += path.worm.factor(state1)*externalPtr->V(path(bead1));
+            /* Defer the external potential so all positions on the slice can be batched. */
+            externalPositions.push_back(path(bead1));
+            externalFactors.push_back(path.worm.factor(state1));
 
             /* The loop over all other particles, to find the total interaction
              * potential */
@@ -603,6 +937,10 @@ std::array<double,2> LocalAction::V(const int slice) {
             } // bead2
 
     } // bead1
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    for (std::size_t i = 0; i < externalValues.size(); ++i)
+        totVext += externalFactors[i] * externalValues[i];
 
     /* Separate the external and interaction parts */ 
     return {totVext,totVint};
@@ -622,6 +960,8 @@ double LocalAction::V(const int slice, const double maxR) {
     double totVint = 0.0;
     double totVext = 0.0;
     dVec r1,r2;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalValues;
 
     double r1sq,r2sq;
 
@@ -629,6 +969,7 @@ double LocalAction::V(const int slice, const double maxR) {
     bead1[0] = bead2[0] = slice;
 
     int numParticles = path.numBeadsAtSlice(slice);
+    externalPositions.reserve(numParticles);
 
     /* Initialize the separation histogram */
     cylSepHist.fill(0);
@@ -645,8 +986,8 @@ double LocalAction::V(const int slice, const double maxR) {
 
         if (r1sq < maxR*maxR) {
 
-            /* Evaluate the external potential */
-            totVext += externalPtr->V(path(bead1));
+            /* Defer the external potential so all positions in the cutoff can be batched. */
+            externalPositions.push_back(r1);
 
             /* The loop over all other particles, to find the total interaction
              * potential */
@@ -669,6 +1010,10 @@ double LocalAction::V(const int slice, const double maxR) {
         } // maxR
     } // bead1
 
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    for (const auto value : externalValues)
+        totVext += value;
+
     return ( totVext + totVint );
 }
 
@@ -680,14 +1025,10 @@ double LocalAction::V(const int slice, const double maxR) {
 ******************************************************************************/
 double LocalAction::Vnn(const beadLocator &bead1) {
 
-    double totVint = 0.0;
     double totVext = 0.0;
 
     /* We only continue if bead1 is turned on */
     if (path.worm.beadOn(bead1)) {
-
-        /* Fill up th nearest neighbor list */
-        lookup.updateInteractionList(path,bead1);
 
         /* Get the state of bead 1 */
         beadState state1 = path.worm.getState(bead1);
@@ -695,11 +1036,25 @@ double LocalAction::Vnn(const beadLocator &bead1) {
         /* Evaluate the external potential */
         totVext = path.worm.factor(state1)*externalPtr->V(path(bead1));
 
-        /* Sum the interaction potential over all NN beads */
-        for (int n = 0; n < lookup.numBeads; n++) {
-            totVint += path.worm.factor(state1,lookup.beadList(n)) 
-                * interactionPtr->V(lookup.beadSep(n));
-        }
+        return Vnn(bead1, totVext);
+    }
+    return 0.0;
+}
+
+double LocalAction::Vnn(const beadLocator &bead1, double totVext) {
+
+    double totVint = 0.0;
+
+    /* We only continue if bead1 is turned on */
+    if (!path.worm.beadOn(bead1))
+        return 0.0;
+
+    /* Sum the interaction potential over all NN beads */
+    lookup.updateInteractionList(path,bead1);
+    beadState state1 = path.worm.getState(bead1);
+    for (int n = 0; n < lookup.numBeads; n++) {
+        totVint += path.worm.factor(state1,lookup.beadList(n)) 
+            * interactionPtr->V(lookup.beadSep(n));
     }
     return ( totVext + totVint );
 }
@@ -718,6 +1073,9 @@ double LocalAction::Vnn(const int slice) {
 
     double totVint = 0.0;
     double totVext = 0.0;
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalFactors;
+    std::vector<double> externalValues;
 
     //FIXME these variables are unused?
     //iVec gIndex,nngIndex;           // The grid box of a particle
@@ -728,6 +1086,8 @@ double LocalAction::Vnn(const int slice) {
 
     beadLocator bead1;      // Interacting beads
     bead1[0] = slice;
+    externalPositions.reserve(path.numBeadsAtSlice(slice));
+    externalFactors.reserve(path.numBeadsAtSlice(slice));
 
     for (bead1[1] = 0; bead1[1] < path.numBeadsAtSlice(slice); bead1[1]++) {
 
@@ -736,9 +1096,10 @@ double LocalAction::Vnn(const int slice) {
         /* Get the state of bead 1 */
         beadState state1 = path.worm.getState(bead1);
 
-        /* Accumulate the external potential */
+        /* Defer the external potential so all positions on the slice can be batched. */
         pos = path(bead1);
-        totVext += path.worm.factor(state1)*externalPtr->V(pos);
+        externalPositions.push_back(pos);
+        externalFactors.push_back(path.worm.factor(state1));
 
         /* Get the interaction list */
         lookup.updateInteractionList(path,bead1);
@@ -753,6 +1114,10 @@ double LocalAction::Vnn(const int slice) {
         } // n
 
     } // bead1
+
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    for (std::size_t i = 0; i < externalValues.size(); ++i)
+        totVext += externalFactors[i] * externalValues[i];
 
     return ( totVext + totVint );
 }
@@ -1509,6 +1874,10 @@ double NonLocalAction::potentialAction () {
 ******************************************************************************/
 double NonLocalAction::potentialAction (const beadLocator &bead1) {
 
+    actionCallStats().nonLocalScalarCalls += 1;
+    if (path.worm.beadOn(bead1))
+        actionCallStats().nonLocalScalarActive += 1;
+
     /* We only need to calculate the potential action if the two neighboring
      * beads are on */
     if (!path.worm.beadOn(bead1))
@@ -1532,8 +1901,14 @@ double NonLocalAction::potentialAction (const beadLocator &bead1) {
     if ( all(nextBead1, inactiveBead) || (!path.worm.beadOn(nextBead1)) )
         return totU;
 
-    /* Evaluate the external potential */
-    double totVext = externalPtr->V(path(bead1))+externalPtr->V(path(nextBead1));
+    /* Evaluate the external potential on the link endpoints as one batch. */
+    std::vector<dVec> externalPositions;
+    std::vector<double> externalValues;
+    externalPositions.reserve(2);
+    externalPositions.push_back(path(bead1));
+    externalPositions.push_back(path(nextBead1));
+    evaluateExternalPotential(externalPtr, externalPositions, externalValues);
+    double totVext = externalValues[0] + externalValues[1];
 
     /* Check if neighboring beads vector needs to grow */
     // Note: commented out code showing intent.

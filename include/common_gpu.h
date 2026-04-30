@@ -27,7 +27,7 @@
     #endif
 
     #ifndef GP_GPU_CPU_FALLBACK_MAX_COUNT
-        #define GP_GPU_CPU_FALLBACK_MAX_COUNT 1 ///< Use scalar CPU evaluation for very small GP batches
+        #define GP_GPU_CPU_FALLBACK_MAX_COUNT 8 ///< Use scalar CPU evaluation for very small GP batches
     #endif
     #ifdef USE_HIP
         #include "hip/hip_runtime.h"

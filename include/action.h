@@ -7,6 +7,7 @@
  */
 
 #include "constants.h"
+#include <vector>
 
 #ifndef ACTION_H 
 #define ACTION_H
@@ -47,10 +48,12 @@ class ActionBase {
         /** The effective potential inter-ACTION for various pass conditions. */
         virtual double potentialAction() {return 0.0;}
         virtual double potentialAction (const beadLocator &, const beadLocator &);
+        virtual double potentialAction (const std::vector<beadLocator> &);
         virtual double potentialAction (const beadLocator &) { return 0.0; }
 
         /* The bare potential action and its correction */
         virtual double barePotentialAction (const beadLocator &) { return 0.0; }
+        virtual void barePotentialAction (const std::vector<beadLocator> &, std::vector<double> &);
         virtual double potentialActionCorrection (const beadLocator &) {return 0.0; }
         virtual double potentialActionCorrection (const beadLocator &, const beadLocator &) { return 0.0; }
 
@@ -160,9 +163,12 @@ class LocalAction : public ActionBase {
         /* The potential action */
         double potentialAction ();
         double potentialAction (const beadLocator &);
+        double potentialAction (const beadLocator &, const beadLocator &);
+        double potentialAction (const std::vector<beadLocator> &);
 
         /* The bare potential action and its correction */
         double barePotentialAction (const beadLocator &);
+        void barePotentialAction (const std::vector<beadLocator> &, std::vector<double> &);
         double potentialActionCorrection (const beadLocator &);
         double potentialActionCorrection (const beadLocator &, const beadLocator &);
 
@@ -215,6 +221,7 @@ class LocalAction : public ActionBase {
         /* The full potential with the NN lookup table for a single bead and all
          * beads at a single time slice. */
         double Vnn(const beadLocator&);
+        double Vnn(const beadLocator&, double);
         double Vnn(const int);
 
         /* The bare potential action for a trajectory */

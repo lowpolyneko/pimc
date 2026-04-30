@@ -1549,34 +1549,87 @@ bool BisectionMove::attemptMove() {
         /* Reset the actions for this level*/
         oldAction = newAction = 0.0;
 
-        beadIndex = path.next(startBead,shift);
-        int k = 1;
-        do {
-            int n = k*shift-1;
+        if (actionPtr->local) {
+            std::vector<beadLocator> includedBeads;
+            std::vector<int> includedIndices;
+            std::vector<beadLocator> previousLevelBeads;
+            std::vector<int> previousLevelIndices;
 
-            if (include(n)) {
-                originalPos(n) = path(beadIndex);
-                oldAction += actionPtr->potentialAction(beadIndex);
+            beadIndex = path.next(startBead,shift);
+            int k = 1;
+            do {
+                int n = k*shift-1;
 
-                /* Generate the new position and compute the action */
-                newPos(n) = newBisectionPosition(beadIndex,shift);
-                path.updateBead(beadIndex,newPos(n));
-                newAction += actionPtr->potentialAction(beadIndex);
+                if (include(n)) {
+                    originalPos(n) = path(beadIndex);
+                    includedBeads.push_back(beadIndex);
+                    includedIndices.push_back(n);
+                }
+                /* At level 1 we need to compute the full action */
+                else if (level==1) {
+                    previousLevelBeads.push_back(beadIndex);
+                    previousLevelIndices.push_back(n);
+                }
 
-                /* Set the include bit */
+                ++k;
+                beadIndex = path.next(beadIndex,shift);
+            } while (!all(beadIndex, endBead));
+
+            oldAction += actionPtr->potentialAction(includedBeads);
+
+            for (std::size_t i = 0; i < includedBeads.size(); ++i) {
+                const int n = includedIndices[i];
+                newPos(n) = newBisectionPosition(includedBeads[i],shift);
+                path.updateBead(includedBeads[i],newPos(n));
                 include(n) = false;
             }
-            /* At level 1 we need to compute the full action */
-            else if (level==1) {
-                newAction += actionPtr->potentialAction(beadIndex);
-                path.updateBead(beadIndex,originalPos(n));
-                oldAction += actionPtr->potentialAction(beadIndex);
-                path.updateBead(beadIndex,newPos(n));
-            }
 
-            ++k;
-            beadIndex = path.next(beadIndex,shift);
-        } while (!all(beadIndex, endBead));
+            newAction += actionPtr->potentialAction(includedBeads);
+
+            if (level == 1) {
+                newAction += actionPtr->potentialAction(previousLevelBeads);
+
+                for (std::size_t i = 0; i < previousLevelBeads.size(); ++i)
+                    path.updateBead(previousLevelBeads[i],
+                            originalPos(previousLevelIndices[i]));
+
+                oldAction += actionPtr->potentialAction(previousLevelBeads);
+
+                for (std::size_t i = 0; i < previousLevelBeads.size(); ++i)
+                    path.updateBead(previousLevelBeads[i],
+                            newPos(previousLevelIndices[i]));
+            }
+        }
+        else {
+            beadIndex = path.next(startBead,shift);
+            int k = 1;
+            do {
+                int n = k*shift-1;
+
+                if (include(n)) {
+                    originalPos(n) = path(beadIndex);
+                    oldAction += actionPtr->potentialAction(beadIndex);
+
+                    /* Generate the new position and compute the action */
+                    newPos(n) = newBisectionPosition(beadIndex,shift);
+                    path.updateBead(beadIndex,newPos(n));
+                    newAction += actionPtr->potentialAction(beadIndex);
+
+                    /* Set the include bit */
+                    include(n) = false;
+                }
+                /* At level 1 we need to compute the full action */
+                else if (level==1) {
+                    newAction += actionPtr->potentialAction(beadIndex);
+                    path.updateBead(beadIndex,originalPos(n));
+                    oldAction += actionPtr->potentialAction(beadIndex);
+                    path.updateBead(beadIndex,newPos(n));
+                }
+
+                ++k;
+                beadIndex = path.next(beadIndex,shift);
+            } while (!all(beadIndex, endBead));
+        }
 
         /* Record the total action difference at this level */
         deltaAction = (newAction - oldAction);
