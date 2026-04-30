@@ -10,15 +10,11 @@ include(GNUInstallDirs)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake/modules)
 
 # Set c++ standard
-if("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
-  set(CMAKE_CXX_STANDARD 23)
-  set(CMAKE_REQUIRED_FLAGS "-std=c++23")
-else()
-  set(CMAKE_CXX_STANDARD 17)
-  set(CMAKE_REQUIRED_FLAGS "-std=c++17")
-endif()
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_STANDARD_REQUIRED TRUE)
+
 include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_FLAGS "-std=c++17")
 
 # --------- Filesystem Header Test ---------
 check_cxx_source_compiles(
@@ -232,7 +228,8 @@ endif()
 
 # Set default build flags
 if (NOT DEFAULT_CXX_FLAGS)
-    set(DEFAULT_CXX_FLAGS "-march=native -w -fno-math-errno -O3 -flto")
+    set(DEFAULT_CXX_FLAGS "-Wall -fno-math-errno -O3 -lhdf5")
+    #set(DEFAULT_CXX_FLAGS "-march=native -Wall -fno-math-errno -O3")
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEFAULT_CXX_FLAGS}")
 
