@@ -138,9 +138,10 @@ class GaussianProcessPotential {
 
     public:
         GaussianProcessPotential(const Container*, const po::variables_map &);
-        virtual ~GaussianProcessPotential() = default;
+        virtual ~GaussianProcessPotential();
 
         double GP(const dVec&);
+        void GP(const dVec*, double*, int);
 
     protected:
         std::unique_ptr<GaussianProcessKernelBase> kernelPtr; // the kernel
@@ -161,6 +162,14 @@ class GaussianProcessPotential {
         double sigma2;                  // the scale of the kernel σ² 
                             
         double μ;                       // the GP mean
+        double maternNu;
+#ifdef USE_GPU
+        gpu_stream_t gpStream;
+        double *d_gpData = nullptr;
+        double *d_positions = nullptr;
+        double *d_values = nullptr;
+        int gpuBufferCapacity = 0;
+#endif
 };
 
 // ========================================================================  
@@ -2178,20 +2187,6 @@ class GPHeBenzenePotential: public PotentialBase  {
         double Wallcy;
         double Wallcx;
         double invWallWidth;
-	
-	//Gaussian process model state
-	const std::array<double,4> xoffset = {0.0, 0.0, -0.09459459, 0.0};
-        const std::array<double,4> xscale = {7.0, 3.5, 7.09459459, 1.0};
-        const std::array<double,3> ell1 = {0.78638807, 2.17270815, 0.77220716};
-        const std::array<double,3> ell2 = {2.03248109, 5.05874827, 1.71032378};
-        const std::array<double,3> inv_ell1 = 1.0 / ell1;
-	const std::array<double,3> inv_ell2 = 1.0 / ell2;
-	const double power = 0.63911297;
-	const double oscale = 814.69663559;
-	const double mean = 22.0553313;
-	const double meany = 8.64215696;
-	const double stdy = 104.91133484;
-
 	//Long-range parameters
 	const double r0       = 5.765366674e+00;
 	const double gama     = 1.671477473e+01;
@@ -2208,21 +2203,6 @@ class GPHeBenzenePotential: public PotentialBase  {
 	const double x10      = 2.551023972e+08;
 	const double x11      = 0.0;
 	const double x12      = 1.883887454e+08;
-
-	static constexpr double sqrt5 = 2.2360679774997896964;
-
-        DynamicArray<std::array<double,4>,1> trainx;      // The normalised training vectors
-        DynamicArray<double,1> prod;           // The right hand vector K^{-1}(Y - mu) where Y is standardised 
-	
-	int numPoints;              // The total number of training points
-        double val;
-#ifdef USE_GPU
-        gpu_stream_t gpStream;
-        double *d_trainx = nullptr;
-        double *d_positions = nullptr;
-        double *d_values = nullptr;
-        int gpuBufferCapacity = 0;
-#endif
 
 	double deg2rad(double);
 	double rad2deg(double);

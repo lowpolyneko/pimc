@@ -14,6 +14,17 @@ struct GPGpuPoint {
     bool cutoff;
 };
 
+struct GenericGPGpuParams {
+    double normOffset[NDIM];
+    double normScale[NDIM];
+    double ell[NDIM];
+    double dataStandardMean;
+    double dataStandardStd;
+    double mean;
+    double sigma2;
+    double maternNu;
+};
+
 __device__ inline GPGpuPoint gp_prepare_point_device(const double* position)
 {
     constexpr double xoffset2 = -0.09459459;

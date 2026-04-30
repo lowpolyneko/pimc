@@ -375,7 +375,8 @@ GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, con
     sigma2(gp_params["kernel.sigma2"].as<double>()),
     dataStandardMean(gp_params["data.standardMean"].as<double>()),
     dataStandardStd(gp_params["data.standardStd"].as<double>()),
-    μ(gp_params["kernel.mean"].as<double>())
+    μ(gp_params["kernel.mean"].as<double>()),
+    maternNu(gp_params["kernel.maternNu"].as<std::vector<double>>()[0])
 {
     /* We populate the local vector variables using the parameter map */
     for (int i=0; i < NDIM; i++){
@@ -387,7 +388,7 @@ GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, con
     /* With all the variables, we are ready to instantiate the kernel */
     /* !!NOTE!! Later this should be switched to a factory dispatch as we get more kernels*/
     if (kernelType.find("matern") != std::string::npos)
-        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,gp_params["kernel.maternNu"].as<std::vector<double>>()[0],ℓ);
+        kernelPtr = std::make_unique<MaternKernel>(_boxPtr,maternNu,ℓ);
     else 
         throw std::runtime_error("Currently only matern kernel is supported\n");
 
@@ -417,6 +418,36 @@ GaussianProcessPotential::GaussianProcessPotential(const Container *_boxPtr, con
     }
 
     fin.close();
+
+#ifdef USE_GPU
+    GPU_ASSERT(gpu_stream_create(gpStream));
+    std::vector<double> flatGpuData((NDIM + 1) * numTrainingPoints);
+    for (uint32 p = 0; p < numTrainingPoints; ++p) {
+        for (int i = 0; i < NDIM; ++i)
+            flatGpuData[(NDIM + 1) * p + i] = trainX(p)[i];
+        flatGpuData[(NDIM + 1) * p + NDIM] = KinvY(p);
+    }
+    GPU_ASSERT(gpu_malloc_device(double, d_gpData, flatGpuData.size(), gpStream));
+    GPU_ASSERT(gpu_memcpy_host_to_device(d_gpData, flatGpuData.data(),
+                sizeof(double) * flatGpuData.size(), gpStream));
+    GPU_ASSERT(gpu_wait(gpStream));
+#endif
+}
+
+/**************************************************************************//**
+ * Destructor.
+******************************************************************************/
+GaussianProcessPotential::~GaussianProcessPotential() {
+#ifdef USE_GPU
+    if (d_gpData)
+        GPU_ASSERT(gpu_free(d_gpData, gpStream));
+    if (d_positions)
+        GPU_ASSERT(gpu_free(d_positions, gpStream));
+    if (d_values)
+        GPU_ASSERT(gpu_free(d_values, gpStream));
+    GPU_ASSERT(gpu_wait(gpStream));
+    GPU_ASSERT(gpu_stream_destroy(gpStream));
+#endif
 }
 
 /**************************************************************************//**
@@ -435,6 +466,52 @@ double GaussianProcessPotential::GP(const dVec &_r) {
    
     // Perform inference and undstandardize output
     return dataStandardMean + dataStandardStd * (μ + sigma2*kernelDot);
+}
+
+/**************************************************************************//**
+ * Batched GP inference.
+******************************************************************************/
+void GaussianProcessPotential::GP(const dVec *positions, double *values, int count) {
+    if (count < 0)
+        throw std::runtime_error("GaussianProcessPotential::GP batch count must be non-negative.");
+    if (count == 0)
+        return;
+
+#ifdef USE_GPU
+    static_assert(sizeof(dVec) == sizeof(double) * NDIM,
+            "GaussianProcessPotential GPU batch path requires contiguous dVec storage.");
+
+#if GP_GPU_CPU_FALLBACK_MAX_COUNT > 0
+    if (count <= GP_GPU_CPU_FALLBACK_MAX_COUNT) {
+        for (int i = 0; i < count; ++i)
+            values[i] = GP(positions[i]);
+        return;
+    }
+#endif
+
+    if (count > gpuBufferCapacity) {
+        if (d_positions)
+            GPU_ASSERT(gpu_free(d_positions, gpStream));
+        if (d_values)
+            GPU_ASSERT(gpu_free(d_values, gpStream));
+        GPU_ASSERT(gpu_wait(gpStream));
+        GPU_ASSERT(gpu_malloc_device(double, d_positions, NDIM * count, gpStream));
+        GPU_ASSERT(gpu_malloc_device(double, d_values, count, gpStream));
+        gpuBufferCapacity = count;
+    }
+
+    GPU_ASSERT(gpu_memcpy_host_to_device(d_positions, reinterpret_cast<const double*>(positions),
+                sizeof(double) * NDIM * count, gpStream));
+    generic_gp_gpu_launcher(gpStream, d_values, d_positions, count,
+            d_gpData, numTrainingPoints, normOffset, normScale, ℓ,
+            dataStandardMean, dataStandardStd, μ, sigma2, maternNu);
+    GPU_ASSERT(gpu_memcpy_device_to_host(values, d_values,
+                sizeof(double) * count, gpStream));
+    GPU_ASSERT(gpu_wait(gpStream));
+#else
+    for (int i = 0; i < count; ++i)
+        values[i] = GP(positions[i]);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -5456,8 +5533,6 @@ GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::
 {
     boxPtr = _boxPtr;
 
-    std::string _trainingFile = gp_params["kernel.trainingFileName"].as<std::string>();
-
     Lz = boxPtr->side[NDIM-1];
     Ly = boxPtr->side[NDIM-2];
     Lx = boxPtr->side[NDIM-3];
@@ -5468,56 +5543,12 @@ GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::
 
     /* Inverse width of the wall onset */
     invWallWidth = 20.0;
-
-    numPoints = gp_params["kernel.numTrainingPoints"].as<uint32>();
-    trainx.resize(numPoints);
-    prod.resize(numPoints);
-    std::ifstream fin(_trainingFile, std::ios::binary);
-    if (!fin) {
-        throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + _trainingFile);
-    }
-    std::array<double,4> row;
-    for (int p = 0; p < numPoints; ++p) {
-        if (!fin.read(reinterpret_cast<char*>(row.data()), 4 * sizeof(double))) {
-            throw std::runtime_error("Unexpected end of file while reading GPHeBenzenePotential training data.");
-        }
-        trainx(p) = row;
-        prod(p) = row[NDIM];
-    }
-    fin.close();
-#ifdef USE_GPU
-    GPU_ASSERT(gpu_stream_create(gpStream));
-
-    constexpr double gpOutputScale = 814.69663559;
-    std::vector<double> flatGpuData(4 * numPoints);
-    for (int i = 0; i < numPoints; ++i) {
-        flatGpuData[4 * i + 0] = trainx(i)[0];
-        flatGpuData[4 * i + 1] = trainx(i)[1];
-        flatGpuData[4 * i + 2] = trainx(i)[2];
-        flatGpuData[4 * i + 3] = gpOutputScale * prod(i);
-    }
-
-    GPU_ASSERT(gpu_malloc_device(double, d_trainx, flatGpuData.size(), gpStream));
-    GPU_ASSERT(gpu_memcpy_host_to_device(d_trainx, flatGpuData.data(),
-                sizeof(double) * flatGpuData.size(), gpStream));
-    GPU_ASSERT(gpu_wait(gpStream));
-#endif
 }
 
 /**************************************************************************//**
  * Destructor.
 ******************************************************************************/
 GPHeBenzenePotential::~GPHeBenzenePotential() {
-#ifdef USE_GPU
-    if (d_trainx)
-        GPU_ASSERT(gpu_free(d_trainx, gpStream));
-    if (d_positions)
-        GPU_ASSERT(gpu_free(d_positions, gpStream));
-    if (d_values)
-        GPU_ASSERT(gpu_free(d_values, gpStream));
-    GPU_ASSERT(gpu_wait(gpStream));
-    GPU_ASSERT(gpu_stream_destroy(gpStream));
-#endif
 }
 
 void GPHeBenzenePotential::V(const dVec* positions, double* values, int count) {
@@ -5526,13 +5557,71 @@ void GPHeBenzenePotential::V(const dVec* positions, double* values, int count) {
     if (count == 0)
         return;
 
-#ifdef USE_GPU
-    static_assert(sizeof(dVec) == sizeof(double) * NDIM,
-            "GPHeBenzenePotential batched GPU path requires contiguous dVec storage.");
-    gpuV(reinterpret_cast<const double*>(positions), values, count);
-#else
-    PotentialBase::V(positions, values, count);
-#endif
+    std::vector<dVec> inferencePositions(count);
+    std::vector<double> gpValues(count);
+    std::vector<char> cutoff(count, 0);
+
+    for (int i = 0; i < count; ++i) {
+        double x = positions[i][0];
+        double y = positions[i][1];
+        double z = positions[i][2];
+        double finx = 0.0;
+        double finy = 0.0;
+
+        if (z <= 0.0)
+            z = -z;
+        const double pi = M_PI;
+        double angle = std::round(rad2deg(atan2(y,x))*10000.0)/10000.0;
+        if (angle < 0.0)
+            angle = 180.0 + (180.0 + angle);
+        if (angle <= 30.0) {
+            finx = x;
+            finy = y;
+        } else {
+            double rotateangle = fmod(angle, 60.0) - angle;
+            if ((angle + rotateangle) > 30.0) {
+                rotateangle = deg2rad(rotateangle);
+                const double rotatedanglex = cos(rotateangle)*x - sin(rotateangle)*y;
+                const double rotatedangley = sin(rotateangle)*x + cos(rotateangle)*y;
+                finx = cos(pi/3.0)*rotatedanglex + sin(pi/3.0)*rotatedangley;
+                finy = sin(pi/3.0)*rotatedanglex - cos(pi/3.0)*rotatedangley;
+            } else {
+                rotateangle = deg2rad(rotateangle);
+                finx = cos(rotateangle)*x - sin(rotateangle)*y;
+                finy = sin(rotateangle)*x + cos(rotateangle)*y;
+            }
+        }
+
+        const double rho = sqrt(finx*finx + finy*finy);
+        if (rho < 3.0 && z < 2.0) {
+            cutoff[i] = 1;
+            values[i] = 10000.0;
+        }
+        inferencePositions[i][0] = finx;
+        inferencePositions[i][1] = finy;
+        inferencePositions[i][2] = z;
+    }
+
+    GPPotential.GP(inferencePositions.data(), gpValues.data(), count);
+
+    for (int i = 0; i < count; ++i) {
+        if (cutoff[i])
+            continue;
+
+        const double finx = inferencePositions[i][0];
+        const double finy = inferencePositions[i][1];
+        const double z = inferencePositions[i][2];
+        const double rho = sqrt(finx*finx + finy*finy);
+        const double rnorm = sqrt(dot(inferencePositions[i],inferencePositions[i]));
+        const double h_long = 1.0 / (1.0 + std::exp(-gama * (rnorm - r0)));
+
+        double value;
+        if (rho > 5.0 || z > 6.5)
+            value = (1.0 - h_long)*gpValues[i] + h_long*long_range(finx,finy,z);
+        else
+            value = gpValues[i];
+        values[i] = value/0.695;
+    }
 }
 
 #ifdef USE_GPU
@@ -5542,36 +5631,12 @@ void GPHeBenzenePotential::gpuV(const double* positions, double* values, int cou
     if (count == 0)
         return;
 
-#if GP_GPU_CPU_FALLBACK_MAX_COUNT > 0
-    if (count <= GP_GPU_CPU_FALLBACK_MAX_COUNT) {
-        for (int i = 0; i < count; ++i) {
-            dVec r;
-            for (int dim = 0; dim < NDIM; ++dim)
-                r[dim] = positions[NDIM * i + dim];
-            values[i] = V(r);
-        }
-        return;
+    std::vector<dVec> batch(count);
+    for (int i = 0; i < count; ++i) {
+        for (int dim = 0; dim < NDIM; ++dim)
+            batch[i][dim] = positions[NDIM * i + dim];
     }
-#endif
-
-    if (count > gpuBufferCapacity) {
-        if (d_positions)
-            GPU_ASSERT(gpu_free(d_positions, gpStream));
-        if (d_values)
-            GPU_ASSERT(gpu_free(d_values, gpStream));
-        GPU_ASSERT(gpu_wait(gpStream));
-        GPU_ASSERT(gpu_malloc_device(double, d_positions, NDIM * count, gpStream));
-        GPU_ASSERT(gpu_malloc_device(double, d_values, count, gpStream));
-        gpuBufferCapacity = count;
-    }
-
-    GPU_ASSERT(gpu_memcpy_host_to_device(d_positions, positions,
-                sizeof(double) * NDIM * count, gpStream));
-    gp_potential_gpu_launcher(gpStream, d_values, d_positions, count,
-            d_trainx, numPoints);
-    GPU_ASSERT(gpu_memcpy_device_to_host(values, d_values,
-                sizeof(double) * count, gpStream));
-    GPU_ASSERT(gpu_wait(gpStream));
+    V(batch.data(), values, count);
 }
 #endif
 
@@ -5630,6 +5695,7 @@ double GPHeBenzenePotential::V(const dVec &r) {
     
     /* Obtain the GP inferred value */
     double val_gp = GPPotential.GP(infr);
+    double val;
 
     //Add long-range part
     double rnorm = sqrt(dot(infr,infr));
