@@ -9,7 +9,4 @@ void generic_gp_gpu_launcher(gpu_stream_t stream, double* values,
         double dataStandardMean, double dataStandardStd, double mean,
         double sigma2, double maternNu);
 
-void gp_potential_gpu_launcher(gpu_stream_t stream, double* values,
-        const double* positions, int count, const double* gpdata, int numPoints);
-
 #endif
