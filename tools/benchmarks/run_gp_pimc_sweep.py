@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, run end-to-end PIMC GPPotential benchmarks, and write tables."""
+"""Build, run end-to-end PIMC GP potential benchmarks, and write tables."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def configure_and_build(build_dir: Path, backend: str, args) -> None:
 
 def ensure_gp_data(points: int, data_root: Path, dry_run: bool) -> Path:
     out = data_root / f"points-{points}"
-    if (out / "testdata.dat").exists() and (out / "proddata.dat").exists():
+    if (out / "gp_input.ini").exists() and (out / "gp_training.dat").exists():
         return out
     cmd = [
         sys.executable,
@@ -154,7 +154,7 @@ def run_case(exe: Path, mode: str, gp: int, particles: int, slices: int, update:
         "--action",
         "gsf",
         "-X",
-        "GPPotential",
+        "gp_he_benzene",
         "-I",
         "free",
         "--number_eq_steps",
@@ -163,10 +163,8 @@ def run_case(exe: Path, mode: str, gp: int, particles: int, slices: int, update:
         str(args.bin_size),
         "--number_bins_stored",
         str(args.bins),
-        "--gp_training_file",
-        str(data_dir / "testdata.dat"),
-        "--gp_coefficient_file",
-        str(data_dir / "proddata.dat"),
+        "--gp_input",
+        str(data_dir / "gp_input.ini"),
     ] + update_args(update)
     result = run(["/usr/bin/time", "-p"] + pimc_cmd, env=env, timeout=args.timeout, dry_run=args.dry_run)
     print(result.stdout, end="")
@@ -224,7 +222,7 @@ def write_outputs(rows: list[list], output_dir: Path) -> None:
         return "ERR" if num is None or den in (None, 0) else f"{num / den:.2f}x"
 
     lines = [
-        "# GPPotential End-to-End PIMC Sweep",
+        "# GP Potential End-to-End PIMC Sweep",
         "",
         "Times are wall-clock `real` seconds from `/usr/bin/time -p`.",
         "",

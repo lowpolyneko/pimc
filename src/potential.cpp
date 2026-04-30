@@ -5456,8 +5456,7 @@ GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::
 {
     boxPtr = _boxPtr;
 
-    std::string _trainingFile = "testdata.dat";
-    std::string _coefficientFile = "proddata.dat";
+    std::string _trainingFile = gp_params["kernel.trainingFileName"].as<std::string>();
 
     Lz = boxPtr->side[NDIM-1];
     Ly = boxPtr->side[NDIM-2];
@@ -5470,67 +5469,22 @@ GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::
     /* Inverse width of the wall onset */
     invWallWidth = 20.0;
 
-    /* Load normalized GP training vectors. */
-    std::array<double,4> xpoint;               // The loaded position, the first number is the type of atom.
-
-    numPoints = 0;
-    trainx.resize(16000);
-    double tempval = 0;
-    int p = 0;
-    int total = 0;
-    int j = 0;
-
+    numPoints = gp_params["kernel.numTrainingPoints"].as<uint32>();
+    trainx.resize(numPoints);
+    prod.resize(numPoints);
     std::ifstream fin(_trainingFile, std::ios::binary);
     if (!fin) {
         throw std::runtime_error("Could not open GPHeBenzenePotential training file: " + _trainingFile);
     }
-    while (fin.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
-	j = total % 4;
-	xpoint[j] = tempval;
-	total++;
-	if (total % 4 == 0) {
-	    numPoints++;	
-	    if (numPoints >= int(trainx.size()))
-            	trainx.resizeAndPreserve(numPoints);
-	    trainx(p) = xpoint;
-	    
-	    p++;
-	}
+    std::array<double,4> row;
+    for (int p = 0; p < numPoints; ++p) {
+        if (!fin.read(reinterpret_cast<char*>(row.data()), 4 * sizeof(double))) {
+            throw std::runtime_error("Unexpected end of file while reading GPHeBenzenePotential training data.");
+        }
+        trainx(p) = row;
+        prod(p) = row[NDIM];
     }
     fin.close();
-    if ((total % 4) != 0) {
-        throw std::runtime_error("GPHeBenzenePotential training file does not contain a whole number of 4-double records: " + _trainingFile);
-    }
-    if (numPoints == 0) {
-        throw std::runtime_error("GPHeBenzenePotential training file is empty: " + _trainingFile);
-    }
-    trainx.resizeAndPreserve(numPoints);   
-    
-    /* Load the GP coefficient vector. */
-    int numCoefficients = 0;
-    p = 0;
-    tempval = 0;
-    prod.resize(16000);
-    std::ifstream fin2(_coefficientFile, std::ios::binary);
-    if (!fin2) {
-        throw std::runtime_error("Could not open GPHeBenzenePotential coefficient file: " + _coefficientFile);
-    }
-    while (fin2.read(reinterpret_cast<char*>(&tempval), sizeof(double))) {
-        numCoefficients++;
-        if (numCoefficients >= int(prod.size()))
-            prod.resizeAndPreserve(numCoefficients);
-	prod(p) = tempval;
-	p++;
-    }
-    fin2.close();
-    if (numCoefficients == 0) {
-        throw std::runtime_error("GPHeBenzenePotential coefficient file is empty: " + _coefficientFile);
-    }
-    if (numCoefficients != numPoints) {
-        throw std::runtime_error(str(format("GPHeBenzenePotential data size mismatch: %d training points in %s but %d coefficients in %s")
-                    % numPoints % _trainingFile % numCoefficients % _coefficientFile));
-    }
-    prod.resizeAndPreserve(numCoefficients);   
 #ifdef USE_GPU
     GPU_ASSERT(gpu_stream_create(gpStream));
 
@@ -5566,15 +5520,15 @@ GPHeBenzenePotential::~GPHeBenzenePotential() {
 #endif
 }
 
-void GPPotential::V(const dVec* positions, double* values, int count) {
+void GPHeBenzenePotential::V(const dVec* positions, double* values, int count) {
     if (count < 0)
-        throw std::runtime_error("GPPotential batch count must be non-negative.");
+        throw std::runtime_error("GPHeBenzenePotential batch count must be non-negative.");
     if (count == 0)
         return;
 
 #ifdef USE_GPU
     static_assert(sizeof(dVec) == sizeof(double) * NDIM,
-            "GPPotential batched GPU path requires contiguous dVec storage.");
+            "GPHeBenzenePotential batched GPU path requires contiguous dVec storage.");
     gpuV(reinterpret_cast<const double*>(positions), values, count);
 #else
     PotentialBase::V(positions, values, count);

@@ -74,7 +74,7 @@ def configure_and_build(build_dir: Path, backend: str, args) -> None:
 
 def ensure_gp_data(points: int, data_root: Path, dry_run: bool) -> Path:
     out = data_root / f"points-{points}"
-    if (out / "testdata.dat").exists() and (out / "proddata.dat").exists():
+    if (out / "gp_input.ini").exists() and (out / "gp_training.dat").exists():
         return out
     cmd = [
         sys.executable,
@@ -121,7 +121,7 @@ def run_case(exe: Path, mode: str, gp: int, particles: int, slices: int, data_di
         "--benchmark-kind",
         "external",
         "--benchmark-potential",
-        "GPPotential",
+        "gp_he_benzene",
         "--benchmark-method",
         "action",
         "--benchmark-iterations",
@@ -140,10 +140,8 @@ def run_case(exe: Path, mode: str, gp: int, particles: int, slices: int, data_di
         "0.5",
         "--benchmark-max",
         "8.0",
-        "--gp_training_file",
-        str(data_dir / "testdata.dat"),
-        "--gp_coefficient_file",
-        str(data_dir / "proddata.dat"),
+        "--gp_input",
+        str(data_dir / "gp_input.ini"),
     ]
     result = run(cmd, env=env, timeout=args.timeout, dry_run=args.dry_run)
     print(result.stdout, end="")
@@ -180,7 +178,7 @@ def write_outputs(rows: list[list], output_dir: Path) -> None:
         return "ERR" if num is None or den in (None, 0) else f"{num / den:.1f}x"
 
     lines = [
-        "# GPPotential Action Sweep",
+        "# GP Potential Action Sweep",
         "",
         "Times are total seconds for `actionU(range)` over the configured iteration count.",
         "",
