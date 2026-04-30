@@ -14,6 +14,8 @@
 #include <cstring>
 #include <fstream>
 
+#include <hdf5.h>
+#include <vector>
 
 // ========================================================================  
 // File Class
@@ -65,6 +67,62 @@ class File
 
 };
 
+
+class H5File
+{
+    public:
+
+        H5File(std::string _type, std::string _data,
+               std::string ensemble, std::string outDir);
+        H5File(std::string _name);
+        ~H5File() { close(); }
+
+        /* Open with one of: H5F_ACC_RDONLY, H5F_ACC_RDWR, H5F_ACC_TRUNC */
+        void open(unsigned mode);
+
+        void reset();
+        void rename();
+
+        void close();
+
+        hid_t id() const { return file_id; }
+        bool  isOpen() const { return file_id >= 0; }
+        bool  exists() const { return exists_; }
+
+
+        template <typename T>
+        void writeScalar(const std::string& path, T value);
+
+        template <typename T>
+        T readScalar(const std::string& path);
+
+        template <typename T>
+        void writeArray(const std::string& path,
+                        const T* data,
+                        const std::vector<hsize_t>& dims);
+
+        template <typename T>
+        void readArray(const std::string& path, T* data);
+
+        std::vector<hsize_t> getDims(const std::string& path);
+
+        void createGroup(const std::string& path);
+        bool hasObject(const std::string& path);
+
+    protected:
+        friend class Communicator;
+
+        std::string name;
+        std::string bakname;
+
+        bool   exists_  = false;
+        hid_t  file_id  = -1;
+
+    private:
+        /* HDF5 type map — specialized in the .cpp */
+        template <typename T> static hid_t h5type();
+};
+
 // ========================================================================  
 // Communicator Class
 // ========================================================================  
@@ -91,6 +149,14 @@ class Communicator
             return &file_.at(type);
         }
 
+        // HDF5 accessor 
+        H5File *h5file(std::string type) {
+            if (!h5file_.count(type))
+                initH5File(type);
+            return &h5file_.at(type);
+        }
+
+
         void updateNames();
 
     protected:
@@ -112,9 +178,12 @@ class Communicator
         double tau;          // A local copy of the actual imaginary time step.
 
         boost::ptr_map<std::string,File> file_; // The file map
+        boost::ptr_map<std::string, H5File> h5file_;
+
 
         /* Initialize a input/output file */
         void initFile(std::string);
+        void initH5File(std::string);
 };
 
 

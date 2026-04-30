@@ -347,6 +347,7 @@ void Setup::initParameters() {
     params.add<std::string>("wall_clock,W","set wall clock limit in hours",oClass);
     params.add<std::string>("start_with_state,s", "start simulation with a supplied state file.",oClass,"");
     params.add<bool>("no_save_state","Only save a state file at the end of a simulation",oClass);
+    params.add<bool>("hdf5_state",     "Use HDF5 format for state save/load (default: text)",oClass);
     params.add<bool>("estimator_list","Output a list of estimators in xml format.",oClass);
     params.add<bool>("update_list","Output a list of updates in xml format.",oClass);
     params.add<std::string>("label","a label to append to all estimator files.",oClass,"");
@@ -395,7 +396,8 @@ void Setup::initParameters() {
     params.add<double>("poisson","Poisson's ratio for graphene",oClass,0.165);
     params.add<double>("carbon_carbon_dist,A","Carbon-Carbon distance for graphene",oClass,1.42);
     params.add<std::string>("graphenelut3d_file_prefix","GrapheneLUT3D file prefix <prefix>serialized.{dat|txt}",oClass,"");
-    params.add<std::string>("gp_input","Gaussian Process hyperparamter input file",oClass,"");
+    params.add<std::string>("gp_training_file","GPPotential binary training vectors file",oClass,"testdata.dat");
+    params.add<std::string>("gp_coefficient_file","GPPotential binary coefficient vector file",oClass,"proddata.dat");
 
     /* Initialize the physical options */
     oClass = "physical";
@@ -448,11 +450,13 @@ void Setup::initParameters() {
     std::vector<std::string> movesToPerform;
     if (PIGS) {
         params.set<bool>("canonical",true);
-        estimatorsToMeasure = {EnergyEstimator::name};
-        movesToPerform = {CenterOfMassMove::name, StagingMove::name, EndStagingMove::name, DisplaceMove::name};         
+        estimatorsToMeasure = {EnergyEstimator::name, TimeEstimator::name};
+        movesToPerform = {CenterOfMassMove::name, StagingMove::name, EndStagingMove::name,
+            DisplaceMove::name};         
     }
     else {
-        estimatorsToMeasure = {EnergyEstimator::name, NumberParticlesEstimator::name, DiagonalFractionEstimator::name};
+        estimatorsToMeasure = {EnergyEstimator::name, NumberParticlesEstimator::name,
+            TimeEstimator::name, DiagonalFractionEstimator::name};
 
         movesToPerform = {CenterOfMassMove::name, BisectionMove::name, OpenMove::name,
             CloseMove::name, InsertMove::name, RemoveMove::name, AdvanceHeadMove::name, 
@@ -729,63 +733,6 @@ bool Setup::parseOptions() {
         std::cerr << "Action: change the aziz_year to a valid option." << std::endl;
         return 1;
     }
-
-    /* For a GP potential validate the hyperparameter input */
-    if (params["external"].as<std::string>() == "gp_he_benzene") {
-	
-	// Check if the file exists
-    	std::ifstream ifs(params["gp_input"].as<std::string>());
-    	if (!ifs) {
-            std::cerr << "ERROR: Cannot open GP hyperparameter file: " << params["gp_input"].as<std::string>() << std::endl;
-            return 1;
-    	}
-
-        /* we read in gaussian process hyperparameters from a .ini file */
-	po::options_description desc("Allowed GP options");
-
-    	desc.add_options()
-            ("kernel.type", po::value<std::string>())
-            ("kernel.meanType", po::value<std::string>())
-            ("kernel.maternNu", po::value<std::vector<double>>()->multitoken())
-            ("kernel.ell", po::value<std::vector<double>>()->multitoken())
-            ("kernel.mean", po::value<double>())
-            ("kernel.sigma2", po::value<double>())
-            ("kernel.numTrainingPoints", po::value<uint32>())
-            ("kernel.trainingFileName", po::value<std::string>())
-            ("data.normOffset", po::value<std::vector<double>>()->multitoken())
-            ("data.normScale", po::value<std::vector<double>>()->multitoken())
-            ("data.standardMean", po::value<double>())
-            ("data.standardStd", po::value<double>());
-            
-	po::store(po::parse_config_file(ifs, desc, true), gp_params);
-    	po::notify(gp_params);
-
-
-
-        // !!AGDNB!! this validation should be reactivated
-	// // Check if Normalisation offset and scale have the correct dimensionsi
-	// if (gp_params["KernelDetails.KernelType"].as<std::string>()=="matern") {
-	//     if ((gp_params["Normalization.Offset"].as<std::vector<double>>().size() != NDIM + 1) || (gp_params["Normalization.Scale"].as<std::vector<double>>().size() != NDIM + 1)) {
-	//         std::cerr << "For multi-fidelity gp normalisation vectors must have size NDIM + 1\n";
-	//         return 1;
-	//     }
-            // std::cout << "inside GP hyperparameters validation" << std::endl;
-	// }	
-	// else if (gp_params["KernelDetails.KernelType"].as<std::string>()!="matern") {  
-	//     if ((gp_params["Normalization.Offset"].as<std::vector<double>>().size() != NDIM) || (gp_params["Normalization.Scale"].as<std::vector<double>>().size() != NDIM)) {
-	//     	std::cerr << "Normalisation vectors must have size NDIM\n";
-	//     	return 1;
-	//     }
-	// }
-
-	// // Check if ell is the correct length
-	// if (gp_params["KernelDetails.ell"].as<std::vector<double>>().size() != NDIM * gp_params["KernelDetails.MaternNu"].as<std::vector<double>>().size()) {
-	//     std::cerr << "Lengthscale vector must be of size NDIM * size(MaternNu)\n";
-	// }
-
-        // std::cout << "inside GP hyperparameters validation" << std::endl;
-    } 
-
 
     /* If a list of estimators has been supplied, we need to verify */
     for (std::string name : params["estimator"].as<std::vector<std::string>>()){

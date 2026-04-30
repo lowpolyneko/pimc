@@ -87,6 +87,9 @@ void ConstantParameters::initConstants(po::variables_map &params) {
     /* Are we saving a state file every bin? */
     saveStateFiles_ = params["no_save_state"].empty();
 
+    /* Are state files written in HDF5 instead of text? */
+    useHDF5State_ = !params["hdf5_state"].empty(); 
+
     /* Do we want variable length diagonal updates? */
     varUpdates_ = params["var_updates"].empty();
     
