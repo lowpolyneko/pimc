@@ -232,7 +232,12 @@ endif()
 
 # Set default build flags
 if (NOT DEFAULT_CXX_FLAGS)
-    set(DEFAULT_CXX_FLAGS "-march=native -w -fno-math-errno -O3 -flto -lhdf5")
+    if (ENABLE_HDF5)
+        set(DEFAULT_CXX_FLAGS "-march=native -w -fno-math-errno -O3 -flto -lhdf5")
+        add_compile_definitions(ENABLE_HDF5)
+    else()
+        set(DEFAULT_CXX_FLAGS "-march=native -w -fno-math-errno -O3 -flto")
+    endif()
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEFAULT_CXX_FLAGS}")
 
