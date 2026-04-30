@@ -211,7 +211,7 @@ void PotentialBase::output() {
 /**************************************************************************//**
 * Return the minimum image difference for 1D separations 
 ******************************************************************************/
-double PotentialBase::deltaSeparation(double sep1, double sep2) const {
+inline __attribute__((always_inline)) double PotentialBase::deltaSeparation(double sep1, double sep2) const {
     
     double delta = sep2-sep1;
     while (delta >= 0.5*constants()->L())
@@ -231,131 +231,6 @@ DynamicArray<double,1> PotentialBase::getExcLen() {
     /* The particle configuration */
     DynamicArray<double,1> excLens(0);
     return excLens;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// TABULATED POTENTIAL CLASS -------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-/**************************************************************************//**
- * Constructor.
-******************************************************************************/
-TabulatedPotential::TabulatedPotential() { 
-    extV.fill(0.0);
-    extdVdr.fill(0.0);
-    extd2Vdr2.fill(0.0);
-}
-
-/**************************************************************************//**
- * Destructor. 
-******************************************************************************/
-TabulatedPotential::~TabulatedPotential() {
-}
-
-/**************************************************************************//**
- *  Given a discretization factor and the system size, create and fill
- *  the lookup tables for the potential and its derivative.
-******************************************************************************/
-void TabulatedPotential::initLookupTable(const double _dr, const double maxSep) {
-
-    /* We now calculate the lookup tables for the interaction potential and 
-     * its first and second derivatives. */
-    dr = _dr;
-    tableLength = int(maxSep/dr);
-    lookupV.resize(tableLength);
-    lookupdVdr.resize(tableLength);
-    lookupd2Vdr2.resize(tableLength);
-    lookupV.fill(0.0);
-    lookupdVdr.fill(0.0);
-    lookupd2Vdr2.fill(0.0);
-
-    double r = 0;
-
-    for (int n = 0; n < tableLength; n++) {
-        lookupV(n)    = valueV(r);
-        lookupdVdr(n) = valuedVdr(r);
-        lookupd2Vdr2(n) = valued2Vdr2(r);
-        r += dr;
-    }
-
-    /* r = 0.0; */
-    /* for (int n = 0; n < tableLength; n++) { */
-    /*     communicate()->file("debug")->stream() << format("%24.16e %24.16e\n") */
-    /*         % r % lookupV(n); */
-    /*     r += dr; */
-    /* }; */
-
-    /* exit(-1); */
-        
-
-//      std::cout << format("%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E\n") % r % lookupV(n) % valueV(r) % 
-
-//  double rc = constants()->rc();
-//  for (int n = 0; n < tableLength; n++) {
-//      r += dr;
-//      if (r <= rc) {
-//          lookupV(n) = valueV(r) - valueV(rc) - valuedVdr(rc)*(r-rc);
-//          lookupdVdr(n) = valuedVdr(r) - valuedVdr(rc);
-//      }
-//      else {
-//          lookupV(n) = 0.0;
-//          lookupdVdr(n) = 0.0;
-//      }
-//      std::cout << format("%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E\n") % r % lookupV(n) % valueV(r) % 
-//          lookupdVdr(n) % valuedVdr(r) % (lookupV(n) - valueV(r)) % (lookupdVdr(n) - valuedVdr(r));
-//  }
-
-}
-
-/**************************************************************************//**
- *  Use the Newton-Gregory forward difference method to do a 2-point lookup
- *  on the potential table.  
- *
- *  @see M.P. Allen and D.J. Tildesley, "Computer Simulation of Liquids" 
- *  (Oxford Press, London, England) p 144 (2004).
-******************************************************************************/
-double TabulatedPotential::newtonGregory(const DynamicArray<double,1> &VTable, 
-        const std::array<double,2> &extVal, const double r) {
-
-    double rdr = r/dr;
-    int k = int(rdr);
-
-    if (k <= 0) 
-        return extVal[0];
-
-    if (k >= tableLength)
-        return extVal[1];
-
-    double xi = rdr - 1.0*k;
-    double vkm1 = VTable(k-1);
-    double vk = VTable(k);
-    double vkp1 = VTable(k+1);
-
-    double T1 = vkm1 + (vk - vkm1) * xi;
-    double T2 = vk + (vkp1 - vk) * (xi - 1.0);
-
-    return (T1 + 0.5 * (T2 - T1) * xi);
-}
-
-/**************************************************************************//**
- *  Use a direct lookup for the potential table.
- *
- *  This is faster thant Newton-Gregory and may give similar results for a fine
- *  enough mesh.
-******************************************************************************/
-double TabulatedPotential::direct(const DynamicArray<double,1> &VTable, 
-        const std::array<double,2> &extVal, const double r) {
-
-    int k = int(r/dr);
-    if (k <= 0) 
-        return extVal[0];
-
-    if (k >= tableLength)
-        return extVal[1];
-
-    return VTable(k);
 }
 
 // ---------------------------------------------------------------------------
@@ -890,7 +765,7 @@ FixedAzizPotential::~FixedAzizPotential() {
  *  The total potential coming from the interaction of a particle with all 
  *  fixed particles.
 ******************************************************************************/
-double FixedAzizPotential::V(const dVec &pos) {
+inline __attribute__((always_inline)) double FixedAzizPotential::V(const dVec &pos) {
 
     double totV = 0.0;
 
@@ -914,7 +789,7 @@ double FixedAzizPotential::V(const dVec &pos) {
  *  The gradient of the total potential coming from the interaction of a 
  *  particle with all fixed particles.
 ******************************************************************************/
-dVec FixedAzizPotential::gradV(const dVec &pos) {
+inline __attribute__((always_inline)) dVec FixedAzizPotential::gradV(const dVec &pos) {
 
     dVec totGradV{};
 
@@ -1117,7 +992,7 @@ FixedPositionLJPotential::~FixedPositionLJPotential() {
  *  @param r the position of a particle
  *  @return the total LJ potential 
 ******************************************************************************/
-double FixedPositionLJPotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double FixedPositionLJPotential::V(const dVec &r) {
 
     //Checked on 11.6.24 with Python for Benzene input and the output seems to be reasonable
     //The LJ here has a hard-coded cutoff at 20 Angstroms, seems reasonable so far.
@@ -1236,7 +1111,7 @@ PlatedLJCylinderPotential::~PlatedLJCylinderPotential() {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double PlatedLJCylinderPotential::V_(const double r, const double R, 
+inline __attribute__((always_inline)) double PlatedLJCylinderPotential::V_(const double r, const double R, 
                                    const double sig, const double eps, const double dens) 
 {
     double x = (r - (r>=R)*EPS) / R;
@@ -1265,7 +1140,7 @@ double PlatedLJCylinderPotential::V_(const double r, const double R,
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double PlatedLJCylinderPotential::dVdr_(const double r, const double R, 
+inline __attribute__((always_inline)) double PlatedLJCylinderPotential::dVdr_(const double r, const double R, 
                                    const double sig, const double eps, const double dens) 
 {
     double x = (r - (r>=R)*EPS) / R;
@@ -1298,7 +1173,7 @@ double PlatedLJCylinderPotential::dVdr_(const double r, const double R,
  *  Return the actual value of the pre-plated cylinder potential, for a 
  *  distance r from the surface of the wall.
 ******************************************************************************/
-double PlatedLJCylinderPotential::valueV(const double r) {
+inline __attribute__((always_inline)) double PlatedLJCylinderPotential::valueV(const double r) {
 
     return V_(r,Ri,sigmaPlated,epsilonPlated,densityPlated) - 
            V_(r,Ro,sigmaPlated,epsilonPlated,densityPlated) +
@@ -1310,7 +1185,7 @@ double PlatedLJCylinderPotential::valueV(const double r) {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double PlatedLJCylinderPotential::valuedVdr(const double r) {
+inline __attribute__((always_inline)) double PlatedLJCylinderPotential::valuedVdr(const double r) {
     return dVdr_(r,Ri,sigmaPlated,epsilonPlated,densityPlated) - 
            dVdr_(r,Ro,sigmaPlated,epsilonPlated,densityPlated) +
            dVdr_(r,Ro,sigma,epsilon,density);
@@ -1320,7 +1195,7 @@ double PlatedLJCylinderPotential::valuedVdr(const double r) {
  * N.B. Need to add this if we want to use the virial estimator.
  *
 ******************************************************************************/
-double PlatedLJCylinderPotential::valued2Vdr2(const double r) {
+inline __attribute__((always_inline)) double PlatedLJCylinderPotential::valued2Vdr2(const double r) {
     return 0.0;
 }
 
@@ -1471,7 +1346,7 @@ LJCylinderPotential::~LJCylinderPotential() {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double LJCylinderPotential::valueV(const double r) {
+inline __attribute__((always_inline)) double LJCylinderPotential::valueV(const double r) {
     double x = r / R;
 
     if (x >= 1.0)
@@ -1501,7 +1376,7 @@ double LJCylinderPotential::valueV(const double r) {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double LJCylinderPotential::valuedVdr(const double r) {
+inline __attribute__((always_inline)) double LJCylinderPotential::valuedVdr(const double r) {
 
     double x = r / R; 
 
@@ -1537,7 +1412,7 @@ double LJCylinderPotential::valuedVdr(const double r) {
  *
  * This has been checked with Mathematica --MTG.
 ******************************************************************************/
-double LJCylinderPotential::valued2Vdr2(const double r) {
+inline __attribute__((always_inline)) double LJCylinderPotential::valued2Vdr2(const double r) {
  
     double x = r / R; 
 
@@ -1701,7 +1576,7 @@ LJHourGlassPotential::~LJHourGlassPotential() {
  *  @param r the position of a particle
  *  @return the confinement potential
 ******************************************************************************/
-double LJHourGlassPotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double LJHourGlassPotential::V(const dVec &r) {
 
     double x = 0.0;
     for (int i = 0; i < NDIM-1; i++)
@@ -1942,7 +1817,7 @@ AzizPotential::~AzizPotential() {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double AzizPotential::valueV(const double r) {
+inline __attribute__((always_inline)) double AzizPotential::valueV(const double r) {
     double x = r / rm;
 
     double Urep = A * exp(-alpha*x + beta*x*x);
@@ -1968,7 +1843,7 @@ double AzizPotential::valueV(const double r) {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double AzizPotential::valuedVdr(const double r) {
+inline __attribute__((always_inline)) double AzizPotential::valuedVdr(const double r) {
     double x = r / rm;
 
     double T1 = A * (-alpha + 2.0*beta*x) * exp(-alpha*x + beta*x*x);
@@ -2001,7 +1876,7 @@ double AzizPotential::valuedVdr(const double r) {
  *
  *  Double checked and working with Mathematica. -MTG
 ******************************************************************************/
-double AzizPotential::valued2Vdr2(const double r) {
+inline __attribute__((always_inline)) double AzizPotential::valued2Vdr2(const double r) {
     double x = r / rm;
 
     double abFactor2 = (alpha - 2.0*beta*x)*(alpha-2.0*beta*x);
@@ -2069,7 +1944,7 @@ H2LJ::H2LJ(const Container *_boxPtr) : PotentialBase(), TabulatedPotential()
  }
 
  /**************************************************************************/
- double H2LJ::valueV(const double r) {
+ inline __attribute__((always_inline)) double H2LJ::valueV(const double r) {
 
     double x = r / SIGMA;
 
@@ -2088,7 +1963,7 @@ H2LJ::H2LJ(const Container *_boxPtr) : PotentialBase(), TabulatedPotential()
  }
 
  /**************************************************************************/
- double H2LJ::valuedVdr(const double r) {
+ inline __attribute__((always_inline)) double H2LJ::valuedVdr(const double r) {
 
       double x = r / SIGMA;
 
@@ -2108,7 +1983,7 @@ H2LJ::H2LJ(const Container *_boxPtr) : PotentialBase(), TabulatedPotential()
  }
 
  /**************************************************************************/
- double H2LJ::valued2Vdr2(const double r) {
+ inline __attribute__((always_inline)) double H2LJ::valued2Vdr2(const double r) {
 
         double x = r / SIGMA;
 //      /* d^2V/dR^2 */
@@ -2200,7 +2075,7 @@ H2LJ::H2LJ(const Container *_boxPtr) : PotentialBase(), TabulatedPotential()
   *  Return the actual value of the Silvera-Goldman potential,
   *  used to construct a lookup table.
  ******************************************************************************/
- double SilveraPotential::valueV(const double r)
+ inline __attribute__((always_inline)) double SilveraPotential::valueV(const double r)
  {
    // Convert r from A to Bohr radii.
    double q = r*BohrPerAngstrom;
@@ -2221,7 +2096,7 @@ H2LJ::H2LJ(const Container *_boxPtr) : PotentialBase(), TabulatedPotential()
  }
 
  // First derivative of Silvera-Goldman.
- double SilveraPotential::valuedVdr(const double r)
+ inline __attribute__((always_inline)) double SilveraPotential::valuedVdr(const double r)
  {
    // Convert r from A to Bohr radii.  NIST CODATA value.
    double q = r*BohrPerAngstrom;
@@ -2242,7 +2117,7 @@ H2LJ::H2LJ(const Container *_boxPtr) : PotentialBase(), TabulatedPotential()
  }
 
  // Second radial derivative of the Silvera-Goldman potential.
- double SilveraPotential::valued2Vdr2(const double r)
+ inline __attribute__((always_inline)) double SilveraPotential::valued2Vdr2(const double r)
  {
    // Convert r from A to Bohr radii.  NIST CODATA value.
    double q = r*BohrPerAngstrom;
@@ -2354,7 +2229,7 @@ SzalewiczPotential::~SzalewiczPotential() {
  *  table.
  *
 ******************************************************************************/
-double SzalewiczPotential::valueV(const double _r) {
+inline __attribute__((always_inline)) double SzalewiczPotential::valueV(const double _r) {
     double r = _r * 1.8897261254578281; // convert from angtrom to bohr
     double x = _r / rm;
 
@@ -2397,7 +2272,7 @@ double SzalewiczPotential::valueV(const double _r) {
  *
  *  Checked and working with Mathematica.
 ******************************************************************************/
-double SzalewiczPotential::valuedVdr(const double _r) {
+inline __attribute__((always_inline)) double SzalewiczPotential::valuedVdr(const double _r) {
     double r = _r * 1.8897261254578281; // convert from angtrom to bohr
     double x = _r / rm;
 
@@ -2453,7 +2328,7 @@ double SzalewiczPotential::valuedVdr(const double _r) {
  *
  *  Double checked and working with Mathematica. -MTG
 ******************************************************************************/
-double SzalewiczPotential::valued2Vdr2(const double _r) {
+inline __attribute__((always_inline)) double SzalewiczPotential::valued2Vdr2(const double _r) {
     double r = _r * 1.8897261254578281; // convert from angtrom to bohr
     double x = _r / rm;
 
@@ -2730,7 +2605,7 @@ HardSpherePotential::~HardSpherePotential() {
  *  @param sep2 The second separation
  *  @return the two-body effective pair potential
 ******************************************************************************/
-double HardSpherePotential::V(const dVec &sep1, const dVec &sep2) 
+inline __attribute__((always_inline)) double HardSpherePotential::V(const dVec &sep1, const dVec &sep2) 
 {
 
     double r1 = sqrt(dot(sep1,sep1));
@@ -2761,7 +2636,7 @@ double HardSpherePotential::V(const dVec &sep1, const dVec &sep2)
  *  @param sep2 the second separation
  *  @return the derivative of the effective potential with respect to lambda
 ******************************************************************************/
-double HardSpherePotential::dVdlambda(const dVec &sep1, const dVec &sep2) 
+inline __attribute__((always_inline)) double HardSpherePotential::dVdlambda(const dVec &sep1, const dVec &sep2) 
 {
 
     double r1 = sqrt(dot(sep1,sep1));
@@ -2793,7 +2668,7 @@ double HardSpherePotential::dVdlambda(const dVec &sep1, const dVec &sep2)
  *  @param tau the imaginary timestep tau
  *  @return the derivative of the effective potential with respect to tau
 ******************************************************************************/
-double HardSpherePotential::dVdtau(const dVec &sep1, const dVec &sep2) 
+inline __attribute__((always_inline)) double HardSpherePotential::dVdtau(const dVec &sep1, const dVec &sep2) 
 {
 
     double r1 = sqrt(dot(sep1,sep1));
@@ -2972,7 +2847,7 @@ double Delta1DPotential::V(const dVec &sep1, const dVec &sep2)
 *  @param sep2 the second separation
 *  @return the derivative of the effective potential with respect to lambda
 ******************************************************************************/
-double Delta1DPotential::dVdlambda(const dVec &sep1, const dVec &sep2)
+inline __attribute__((always_inline)) double Delta1DPotential::dVdlambda(const dVec &sep1, const dVec &sep2)
 {
     
     double dxt = deltaSeparation(sep1[0], sep2[0])/l0;
@@ -3044,7 +2919,7 @@ HardRodPotential::~HardRodPotential() {
  *  @param sep2 The second separation
  *  @return the two-body effective pair potential
 ******************************************************************************/
-double HardRodPotential::V(const dVec &sep1, const dVec &sep2) 
+inline __attribute__((always_inline)) double HardRodPotential::V(const dVec &sep1, const dVec &sep2) 
 {
     double r1 = sqrt(dot(sep1,sep1));
     double r2 = sqrt(dot(sep2,sep2));
@@ -3079,7 +2954,7 @@ double HardRodPotential::V(const dVec &sep1, const dVec &sep2)
  *  @param sep2 the second separation
  *  @return the derivative of the effective potential with respect to lambda
 ******************************************************************************/
-double HardRodPotential::dVdlambda(const dVec &sep1, const dVec &sep2) 
+inline __attribute__((always_inline)) double HardRodPotential::dVdlambda(const dVec &sep1, const dVec &sep2) 
 {
 
     double r1 = sqrt(dot(sep1,sep1));
@@ -3104,7 +2979,7 @@ double HardRodPotential::dVdlambda(const dVec &sep1, const dVec &sep2)
  *  @param sep2 the second separation
  *  @return the derivative of the effective potential with respect to tau
 ******************************************************************************/
-double HardRodPotential::dVdtau(const dVec &sep1, const dVec &sep2) 
+inline __attribute__((always_inline)) double HardRodPotential::dVdtau(const dVec &sep1, const dVec &sep2) 
 {
 
     double r1 = sqrt(dot(sep1,sep1));
@@ -3180,7 +3055,7 @@ GraphenePotential::~GraphenePotential() {
  *  @param r the position of a helium particle
  *  @return the van der Waals' potential for graphene-helium
 ******************************************************************************/
-double GraphenePotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double GraphenePotential::V(const dVec &r) {
 
     double z = r[2] + Lzo2;
 
@@ -3506,7 +3381,7 @@ GrapheneLUTPotential::~GrapheneLUTPotential() {
  *  @param r the position of a helium particle
  *  @return the van der Waals' potential for graphene-helium
 ******************************************************************************/
-double GrapheneLUTPotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double GrapheneLUTPotential::V(const dVec &r) {
     
     double z = r[2]+(Lzo2);
     if (z < zmin) 
@@ -3555,7 +3430,7 @@ double GrapheneLUTPotential::V(const dVec &r) {
  *  @param r the position of a helium particle
  *  @return the gradient of the van der Waals' potential for graphene-helium
 ******************************************************************************/
-dVec GrapheneLUTPotential::gradV(const dVec &r) {
+inline __attribute__((always_inline)) dVec GrapheneLUTPotential::gradV(const dVec &r) {
 
     return dVec{};
 
@@ -3715,7 +3590,7 @@ GrapheneLUT3DPotential::~GrapheneLUT3DPotential() {
  *  @param r the position of a helium particle
  *  @return the van der Waals' potential for graphene-helium
 ******************************************************************************/
-double GrapheneLUT3DPotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double GrapheneLUT3DPotential::V(const dVec &r) {
     double z = r[2]+Lzo2;
 
     /* Check for extremal values of z */
@@ -3744,7 +3619,7 @@ double GrapheneLUT3DPotential::V(const dVec &r) {
  *  @param r the position of a helium particle
  *  @return the gradient of the van der Waals' potential for graphene-helium
 ******************************************************************************/
-dVec GrapheneLUT3DPotential::gradV(const dVec &r) {
+inline __attribute__((always_inline)) dVec GrapheneLUT3DPotential::gradV(const dVec &r) {
     dVec _gradV{};
     if (r[2] + Lzo2 < zmin){ 
         return _gradV;
@@ -5191,7 +5066,7 @@ LeeBenzenePotential::~LeeBenzenePotential() {
  *  @param r the position of a helium particle
  *  @return ab-initio calculated potential for Benzene-Helium
 ******************************************************************************/
-double LeeBenzenePotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double LeeBenzenePotential::V(const dVec &r) {
 
     //Checked on 4.10.25 with Python 
     double x = r[0];
@@ -5349,7 +5224,7 @@ ShirkovBenzene::~ShirkovBenzene() {
  *  @param r the position of a helium particle
  *  @return ab-initio calculated potential for Benzene-Helium
 ******************************************************************************/
-double ShirkovBenzene::V(const dVec &r) {
+inline __attribute__((always_inline)) double ShirkovBenzene::V(const dVec &r) {
 
     //Checked on 9.29.25 with Python  
     double x = r[0];
@@ -5551,7 +5426,7 @@ GPHeBenzenePotential::GPHeBenzenePotential (const Container *_boxPtr, const po::
 GPHeBenzenePotential::~GPHeBenzenePotential() {
 }
 
-void GPHeBenzenePotential::V(const dVec* positions, double* values, int count) {
+inline __attribute__((always_inline)) void GPHeBenzenePotential::V(const dVec* positions, double* values, int count) {
     if (count < 0)
         throw std::runtime_error("GPHeBenzenePotential batch count must be non-negative.");
     if (count == 0)
@@ -5647,7 +5522,7 @@ void GPHeBenzenePotential::gpuV(const double* positions, double* values, int cou
  *  @param r the position of a helium particle
  *  @return GP-evaluated potential for Benzene-Helium
 ******************************************************************************/
-double GPHeBenzenePotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double GPHeBenzenePotential::V(const dVec &r) {
     //Rotate the point 
     double x = r[0];
     double y = r[1];

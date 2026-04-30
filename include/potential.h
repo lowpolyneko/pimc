@@ -43,6 +43,42 @@ class PotentialBase {
         PotentialBase ();
         virtual ~PotentialBase();
     
+#if _cplusplus >= 202302L
+        /** The potential */
+        template <typename Self>
+        inline __attribute__((always_inline)) double V(this Self&& s, const dVec &pos) {
+            return std::forward<Self>(s).V(pos);
+        }
+
+        /** The effective potential for the pair product approximation */
+        template <typename Self>
+        inline __attribute__((always_inline)) double V(this Self&& s, const dVec &sep1, const dVec &sep2) {
+            return std::forward<Self>(s).V(sep1, sep2);
+        }
+
+        /** The gradient of the potential*/
+        template <typename Self>
+        inline __attribute__((always_inline)) dVec gradV(this Self&& s, const dVec &pos) {
+            return std::forward<Self>(s).gradV(pos);
+        }
+
+        /** Grad^2 of the potential*/
+        template <typename Self>
+        inline __attribute__((always_inline)) dVec grad2V(this Self&& s, const dVec &r)) {
+            return std::forward<Self>(s).grad2V(r);
+        }
+
+        /** The derivative of the effective potential with respect to lambda
+         *  and tau */
+        template <typename Self>
+        inline __attribute__((always_inline)) double dVdlambda(this Self&& s, const dVec &sep1, const dVec &sep2) {
+            return std::forward<Self>(s).dVdlambda(sep1, sep2);
+        }
+        template <typename Self>
+        inline __attribute__((always_inline)) double dVdtau(this Self&& s, const dVec &sep1, const dVec &sep2) {
+            return std::forward<Self>(s).dVdtau(sep1, sep2);
+        }
+#else
         /** The potential */
         virtual double V(const dVec &) { return 0.0; }
 
@@ -62,6 +98,7 @@ class PotentialBase {
          *  and tau */
         virtual double dVdlambda(const dVec &, const dVec &) {return 0.0;}
         virtual double dVdtau(const dVec &, const dVec &) {return 0.0;}
+#endif
         
         /** Default Initial configuration of particles*/
         virtual DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
@@ -75,7 +112,7 @@ class PotentialBase {
         virtual DynamicArray<double,1> getExcLen();
 
     protected:
-        double deltaSeparation(double sep1,double sep2) const;
+        inline __attribute__((always_inline)) double deltaSeparation(double sep1,double sep2) const;
         DynamicArray<dVec,1> testPositions;     // An array that can be used for debugging a potential.
 };
 
@@ -89,41 +126,154 @@ class PotentialBase {
  * use a 2-point Newton-Gregory spline fit to perform the actual 
  * interpolation.
  */
+template <typename T>
 class TabulatedPotential {
     public:
-        TabulatedPotential();
-        virtual ~TabulatedPotential();
+        /**************************************************************************//**
+         * Constructor.
+        ******************************************************************************/
+        TabulatedPotential() {
+            extV.fill(0.0);
+            extdVdr.fill(0.0);
+            extd2Vdr2.fill(0.0);
+        }
+
+        /**************************************************************************//**
+         * Destructor. 
+        ******************************************************************************/
+        ~TabulatedPotential() {
+        }
 
     protected:
-	DynamicArray <double,1> lookupV;           ///< A potential lookup table
-	DynamicArray <double,1> lookupdVdr;        ///< A lookup table for dVint/dr
-	DynamicArray <double,1> lookupd2Vdr2;      ///< A lookup table for d2Vint/dr2
+        DynamicArray <double,1> lookupV;           ///< A potential lookup table
+        DynamicArray <double,1> lookupdVdr;        ///< A lookup table for dVint/dr
+        DynamicArray <double,1> lookupd2Vdr2;      ///< A lookup table for d2Vint/dr2
 
         double dr;                          ///< The discretization for the lookup table
         int tableLength;                    ///< The number of elements in the lookup table
 
-	std::array<double,2> extV;          ///< Extremal value of V
-	std::array<double,2> extdVdr;       ///< Extremal value of dV/dr
-	std::array<double,2> extd2Vdr2;     ///< Extremal value of d2V/dr2
+        std::array<double,2> extV;          ///< Extremal value of V
+        std::array<double,2> extdVdr;       ///< Extremal value of dV/dr
+        std::array<double,2> extd2Vdr2;     ///< Extremal value of d2V/dr2
 
-        /* Initialize all data structures */
-        void initLookupTable(const double, const double);
+        /**************************************************************************//**
+         *  Given a discretization factor and the system size, create and fill
+         *  the lookup tables for the potential and its derivative.
+        ******************************************************************************/
+        void initLookupTable(const double _dr, const double maxSep) {
 
-        /* Returns the 2-point spline fit to the lookup table */
-        virtual double newtonGregory(const DynamicArray<double,1>&, const std::array<double,2>&, const double);
+            /* We now calculate the lookup tables for the interaction potential and 
+             * its first and second derivatives. */
+            dr = _dr;
+            tableLength = int(maxSep/dr);
+            lookupV.resize(tableLength);
+            lookupdVdr.resize(tableLength);
+            lookupd2Vdr2.resize(tableLength);
+            lookupV.fill(0.0);
+            lookupdVdr.fill(0.0);
+            lookupd2Vdr2.fill(0.0);
 
-        /* Returns a bare lookup value */
-        virtual double direct(const DynamicArray<double,1>&, const std::array<double,2>&, const double);
+            double r = 0;
+
+            for (int n = 0; n < tableLength; n++) {
+                lookupV(n)    = valueV(r);
+                lookupdVdr(n) = valuedVdr(r);
+                lookupd2Vdr2(n) = valued2Vdr2(r);
+                r += dr;
+            }
+
+            /* r = 0.0; */
+            /* for (int n = 0; n < tableLength; n++) { */
+            /*     communicate()->file("debug")->stream() << format("%24.16e %24.16e\n") */
+            /*         % r % lookupV(n); */
+            /*     r += dr; */
+            /* }; */
+
+            /* exit(-1); */
+
+
+            //      std::cout << format("%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E\n") % r % lookupV(n) % valueV(r) % 
+
+            //  double rc = constants()->rc();
+            //  for (int n = 0; n < tableLength; n++) {
+            //      r += dr;
+            //      if (r <= rc) {
+            //          lookupV(n) = valueV(r) - valueV(rc) - valuedVdr(rc)*(r-rc);
+            //          lookupdVdr(n) = valuedVdr(r) - valuedVdr(rc);
+            //      }
+            //      else {
+            //          lookupV(n) = 0.0;
+            //          lookupdVdr(n) = 0.0;
+            //      }
+            //      std::cout << format("%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E%16.8E\n") % r % lookupV(n) % valueV(r) % 
+            //          lookupdVdr(n) % valuedVdr(r) % (lookupV(n) - valueV(r)) % (lookupdVdr(n) - valuedVdr(r));
+            //  }
+        }
+
+        /**************************************************************************//**
+         *  Use the Newton-Gregory forward difference method to do a 2-point lookup
+         *  on the potential table.  
+         *
+         *  @see M.P. Allen and D.J. Tildesley, "Computer Simulation of Liquids" 
+         *  (Oxford Press, London, England) p 144 (2004).
+        ******************************************************************************/
+        inline __attribute__((always_inline)) double newtonGregory(const DynamicArray<double,1> &VTable, 
+                const std::array<double,2> &extVal, const double r) {
+
+            double rdr = r/dr;
+            int k = int(rdr);
+
+            if (k <= 0) 
+                return extVal[0];
+
+            if (k >= tableLength)
+                return extVal[1];
+
+            double xi = rdr - 1.0*k;
+            double vkm1 = VTable(k-1);
+            double vk = VTable(k);
+            double vkp1 = VTable(k+1);
+
+            double T1 = vkm1 + (vk - vkm1) * xi;
+            double T2 = vk + (vkp1 - vk) * (xi - 1.0);
+
+            return (T1 + 0.5 * (T2 - T1) * xi);
+        }
+
+        /**************************************************************************//**
+         *  Use a direct lookup for the potential table.
+         *
+         *  This is faster thant Newton-Gregory and may give similar results for a fine
+         *  enough mesh.
+        ******************************************************************************/
+        inline __attribute__((always_inline)) double direct(const DynamicArray<double,1> &VTable, 
+                const std::array<double,2> &extVal, const double r) {
+
+            int k = int(r/dr);
+            if (k <= 0) 
+                return extVal[0];
+
+            if (k >= tableLength)
+                return extVal[1];
+
+            return VTable(k);
+        }
+
 
         /** The functional value of V */
-        virtual double valueV (const double) = 0;               
-        
+        inline __attribute__((always_inline)) double valueV (const double r) {
+            return static_cast<T*>(this)->valueV(r);
+        }
+
         /** The functional value of dV/dr */
-        virtual double valuedVdr (const double) = 0;
+        inline __attribute__((always_inline)) double valuedVdr (const double r) {
+            return static_cast<T*>(this)->valuedVdr(r);
+        }
 
         /** The functional value of d2V/dr2 */
-        virtual double valued2Vdr2 (const double) = 0;                  
-    
+        inline __attribute__((always_inline)) double valued2Vdr2 (const double r) {
+            return static_cast<T*>(this)->valued2Vdr2(r);
+        }
 };
 
 // ========================================================================  
@@ -225,10 +375,10 @@ class FreePotential: public PotentialBase {
         ~FreePotential();
 
         /** The potential. */
-        double V(const dVec &sep) { return 0.0*sep[0]; };
+        inline __attribute__((always_inline)) double V(const dVec &sep) { return 0.0*sep[0]; };
 
         /** The gradient of the potential. */
-        dVec gradV(const dVec &pos) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &pos) {
             return (0.0*pos);
         }
 };
@@ -250,12 +400,12 @@ class HarmonicPotential : public PotentialBase {
         double omega2;       //The SHO frequency in units of hbar
 
         /** The potential. */
-        double V(const dVec &r) { 
+        inline __attribute__((always_inline)) double V(const dVec &r) { 
             return (omega2*dot(r,r)/(4.0*constants()->lambda()));
         }
 
         /** The gradient of the potential. */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             dVec tempr;
             tempr = r;
             return (omega2*tempr/(2.0*constants()->lambda()));
@@ -277,13 +427,13 @@ class SingleWellPotential : public PotentialBase {
         ~SingleWellPotential ();
 
         /** The potential */
-        double V(const dVec &r) { 
+        inline __attribute__((always_inline)) double V(const dVec &r) { 
             double r2 = dot(r,r);
             return ( 0.5*r2 + r2*r2 );
         }
 
         /** The gradient of the potential. */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             double r2 = dot(r,r);
             dVec tempr;
             tempr = r;
@@ -304,7 +454,7 @@ class HarmonicCylinderPotential : public PotentialBase {
         ~HarmonicCylinderPotential ();
 
         /** The potential. */
-        double V(const dVec &r) { 
+        inline __attribute__((always_inline)) double V(const dVec &r) { 
             double r2 = 0.0;
             for (int i=0; i < NDIM-1; i++)
                 r2 += r[i]*r[i];
@@ -312,7 +462,7 @@ class HarmonicCylinderPotential : public PotentialBase {
         }
 
         /** The gradient of the potential. */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             dVec tempr{};
             for (int i=0; i < NDIM-1; i++)
                 tempr[i] = r[i];
@@ -344,7 +494,7 @@ class DeltaPotential : public PotentialBase  {
          * the limit of a Gaussian distribution.
          * Tested and working in Mathematica.
          */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             return (norm*exp(-dot(r,r)*inv2sigma2));
         }
 
@@ -353,7 +503,7 @@ class DeltaPotential : public PotentialBase  {
          * g approximated as the limit of a Gaussian distribution.
          * Tested and working in Mathematica.
          */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             return (-2.0*r*norm*inv2sigma2*exp(-dot(r,r)*inv2sigma2));
         }
 
@@ -380,7 +530,7 @@ class LorentzianPotential : public PotentialBase  {
          * the limit of a Lorentzian distribution.
          * Tested and working in Mathematica.
          */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             return (norm / (a*a + dot(r,r)));
         }
 
@@ -389,7 +539,7 @@ class LorentzianPotential : public PotentialBase  {
          * 2c approximated as the limit of a Lorentzian distribution.
          * Tested and working in Mathematica.
          */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             double b = a*a + dot(r,r);
             return ((-(2.0*norm*a)/(b*b))*r);
         }
@@ -416,7 +566,7 @@ class SutherlandPotential : public PotentialBase  {
         /**
          * Return the Sutherland potential g/r^2.
          */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             double x = pioL*(sqrt(dot(r,r)) + EPS);
             return g * pioL * pioL / (sin(x)*sin(x));
         }
@@ -424,7 +574,7 @@ class SutherlandPotential : public PotentialBase  {
         /**
          * Return the gradient of the Sutherland potential.
          */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             double rnorm = sqrt(dot(r,r)) + EPS;
             double x = pioL*rnorm;
             double s = sin(x);
@@ -434,7 +584,7 @@ class SutherlandPotential : public PotentialBase  {
         /**
          * Return the Laplacian of the Sutherland potential.
          */
-        double grad2V(const dVec &r) {
+        inline __attribute__((always_inline)) double grad2V(const dVec &r) {
             double x = pioL*(sqrt(dot(r,r))+EPS);
             double s = sin(x);
             return 2.0* g * pioL * pioL * pioL * pioL * (2.0+cos(2*x)) / 
@@ -463,7 +613,7 @@ class DipolePotential : public PotentialBase  {
         /**
          * Return the dipole potential 1/r^3.
          */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             double x = sqrt(dot(r,r));
             if (x < EPS)
                 return LBIG;
@@ -474,7 +624,7 @@ class DipolePotential : public PotentialBase  {
          * Return the gradient of the dipole potential.
          * \partial (1/r^3) \partial r \hat{r} = -3r^{-5} \vec{r}
          */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             double x = sqrt(dot(r,r));
             if (x < EPS)
                 return dVec{};
@@ -484,7 +634,7 @@ class DipolePotential : public PotentialBase  {
         /**
          * Return the Laplacian of the dipolar potential.
          */
-        double grad2V(const dVec &r) {
+        inline __attribute__((always_inline)) double grad2V(const dVec &r) {
             double x = sqrt(dot(r,r));
             if (x < EPS)
                 return 0.0;
@@ -506,7 +656,7 @@ class HardCylinderPotential : public PotentialBase {
         ~HardCylinderPotential ();
 
         /** A step function at rho=R. */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             if (sqrt(r[0]*r[0]+r[1]*r[1]) >= R)
                 return LBIG;
             else
@@ -514,7 +664,7 @@ class HardCylinderPotential : public PotentialBase {
         }
 
         /** A delta function at rho=R. */
-        dVec gradV(const dVec &r) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r) {
             dVec tempr;
             tempr = r;
             tempr[2] = 0.0;
@@ -537,13 +687,13 @@ class HardCylinderPotential : public PotentialBase {
  * Computes the value of the external wall potential for a plated cylindrical 
  * cavity. 
  */
-class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotential {
+class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotential<PlatedLJCylinderPotential> {
     public:
         PlatedLJCylinderPotential (const double, const double, const double, const double, const double);
         ~PlatedLJCylinderPotential ();
 
         /** The integrated LJ Wall potential. */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             int k = static_cast<int>(sqrt(r[0]*r[0] + r[1]*r[1])/dR);
             if (k >= tableLength)
                 return extV[1];
@@ -552,13 +702,18 @@ class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotentia
         }
 
         /* The gradient of the LJ Wall potential */
-        dVec gradV(const dVec &);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &);
 
         /* Laplacian of the LJ Wall potential */
-        double grad2V(const dVec &);
+        inline __attribute__((always_inline)) double grad2V(const dVec &);
 
         /** Initial configuration corresponding to the LJ cylinder potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
+
+        /* Used to construct the lookup tables */
+        inline __attribute__((always_inline)) double valueV (const double);               
+        inline __attribute__((always_inline)) double valuedVdr (const double);                
+        inline __attribute__((always_inline)) double valued2Vdr2 (const double);
 
     private:
         /** local methods for computing the potential of a LJ cylinder */
@@ -578,11 +733,6 @@ class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotentia
         double dR;      // Discretization for the lookup table
 
         double minV;    // The minimum value of the potential
-
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                
-        double valued2Vdr2 (const double);
 };
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -593,7 +743,7 @@ class PlatedLJCylinderPotential : public PotentialBase, public TabulatedPotentia
  * Return the gradient of aziz potential for separation r using a 
  * lookup table. 
  */
-inline dVec PlatedLJCylinderPotential::gradV(const dVec &r) {
+inline __attribute__((always_inline)) dVec PlatedLJCylinderPotential::gradV(const dVec &r) {
     double rnorm = sqrt(r[0]*r[0] + r[1]*r[1]);
     dVec tempr;
     tempr = r;
@@ -611,7 +761,7 @@ inline dVec PlatedLJCylinderPotential::gradV(const dVec &r) {
  * Return the Laplacian of aziz potential for separation r using a 
  * lookup table. 
  */
-inline double PlatedLJCylinderPotential::grad2V(const dVec &r) {
+inline __attribute__((always_inline)) double PlatedLJCylinderPotential::grad2V(const dVec &r) {
     double rnorm = sqrt(r[0]*r[0] + r[1]*r[1]);
     dVec tempr;
     tempr = r;
@@ -634,13 +784,13 @@ inline double PlatedLJCylinderPotential::grad2V(const dVec &r) {
  * Computes the value of the external wall potential for a cylindrical 
  * cavity. 
  */
-class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
+class LJCylinderPotential : public PotentialBase, public TabulatedPotential<LJCylinderPotential> {
     public:
         LJCylinderPotential (const double, const double, const double, const double);
         ~LJCylinderPotential ();
 
         /** The integrated LJ Wall potential. */
-        double V(const dVec &r) {
+        inline __attribute__((always_inline)) double V(const dVec &r) {
             int k = static_cast<int>(sqrt(r[0]*r[0] + r[1]*r[1])/dR);
             if (k >= tableLength)
                 return extV[1];
@@ -649,13 +799,18 @@ class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
         }
 
         /* The gradient of the LJ Wall potential */
-        dVec gradV(const dVec &);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &);
 
         /* Laplacian of the LJ Wall potential */
-        double grad2V(const dVec &);
+        inline __attribute__((always_inline)) double grad2V(const dVec &);
 
         /** Initial configuration corresponding to the LJ cylinder potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
+
+        /* Used to construct the lookup tables */
+        inline __attribute__((always_inline)) double valueV (const double);               
+        inline __attribute__((always_inline)) double valuedVdr (const double);                
+        inline __attribute__((always_inline)) double valued2Vdr2 (const double);
 
     private:
         /* All the parameters needed for the LJ wall potential */
@@ -667,11 +822,6 @@ class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
         double dR;      // Discretization for the lookup table
 
         double minV;    // The minimum value of the potential
-
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                
-        double valued2Vdr2 (const double);
 };
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -682,7 +832,7 @@ class LJCylinderPotential : public PotentialBase, public TabulatedPotential {
  * Return the gradient of aziz potential for separation r using a 
  * lookup table. 
  */
-inline dVec LJCylinderPotential::gradV(const dVec &r) {
+inline __attribute__((always_inline)) dVec LJCylinderPotential::gradV(const dVec &r) {
     double rnorm = sqrt(r[0]*r[0] + r[1]*r[1]);
     dVec tempr;
     tempr = r;
@@ -700,7 +850,7 @@ inline dVec LJCylinderPotential::gradV(const dVec &r) {
  * Return the Laplacian of aziz potential for separation r using a 
  * lookup table. 
  */
-inline double LJCylinderPotential::grad2V(const dVec &r) {
+inline __attribute__((always_inline)) double LJCylinderPotential::grad2V(const dVec &r) {
     double rnorm = sqrt(r[0]*r[0] + r[1]*r[1]);
     dVec tempr;
     tempr = r;
@@ -730,15 +880,15 @@ class LJHourGlassPotential : public PotentialBase {
         ~LJHourGlassPotential ();
 
         /** The integrated LJ hour glass potential. */
-        double V(const dVec &); 
+        inline __attribute__((always_inline)) double V(const dVec &); 
 
         /** The gradient of the potential. Use the prrimitive approx. */
-        dVec gradV(const dVec &pos) {
+        inline __attribute__((always_inline)) dVec gradV(const dVec &pos) {
             return (0.0*pos);
         }
 
         /* Laplacian of the LJ Wall potential. Use primitive approx. */
-        double grad2V(const dVec & pos) {
+        inline __attribute__((always_inline)) double grad2V(const dVec & pos) {
             return 0.0;
         }
 
@@ -780,28 +930,28 @@ class LJHourGlassPotential : public PotentialBase {
  * Computes the value of the semi-empircal Aziz potential that is known
  * to be accurate for He-4.
  */
-class AzizPotential : public PotentialBase, public TabulatedPotential {
+class AzizPotential : public PotentialBase, public TabulatedPotential<AzizPotential> {
     public:
         AzizPotential (const int, const Container *);
         ~AzizPotential ();
 
         /* The Aziz HFDHE2 Potential */
-        double V(const dVec &);
+        inline __attribute__((always_inline)) double V(const dVec &);
 
         /* The gradient of the Aziz potential */
-        dVec gradV(const dVec &);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &);
 
         /* The Laplacian of the Aziz potential */
-        double grad2V(const dVec &);
+        inline __attribute__((always_inline)) double grad2V(const dVec &);
+
+        /* Used to construct the lookup tables */
+        inline __attribute__((always_inline)) double valueV (const double);               
+        inline __attribute__((always_inline)) double valuedVdr (const double);                    
+        inline __attribute__((always_inline)) double valued2Vdr2 (const double);
 
     private:
         /* All the parameters of the Aziz potential */
         double rm, A, epsilon, alpha, beta, D, C6, C8, C10;
-
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                    
-        double valued2Vdr2 (const double);
 
         /* The F-function needed for the Aziz potential */
         double F(const double x) {
@@ -832,7 +982,7 @@ class AzizPotential : public PotentialBase, public TabulatedPotential {
 /** 
  * Return the aziz potential for separation r using a lookup table. 
  */
-inline double AzizPotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double AzizPotential::V(const dVec &r) {
     //double rnorm = sqrt(dot(r,r));
     //return newtonGregory(lookupV,extV,rnorm);
     return direct(lookupV,extV,sqrt(dot(r,r)));
@@ -844,7 +994,7 @@ inline double AzizPotential::V(const dVec &r) {
  * Return the gradient of aziz potential for separation r using a 
  * lookup table. 
  */
-inline dVec AzizPotential::gradV(const dVec &r) {
+inline __attribute__((always_inline)) dVec AzizPotential::gradV(const dVec &r) {
     double rnorm = sqrt(dot(r,r));
     dVec gV;
     //gV = (newtonGregory(lookupdVdr,extdVdr,rnorm)/rnorm)*r;
@@ -859,7 +1009,7 @@ inline dVec AzizPotential::gradV(const dVec &r) {
  * lookup table. 
  */
 
-inline double AzizPotential::grad2V(const dVec &r) {
+inline __attribute__((always_inline)) double AzizPotential::grad2V(const dVec &r) {
     double rnorm = sqrt(dot(r,r));
     double g2V;
     //g2V = (newtonGregory(lookupd2Vdr2,extd2Vdr2,rnorm)/rnorm)*r;
@@ -871,39 +1021,38 @@ inline double AzizPotential::grad2V(const dVec &r) {
 // Hydrogen Potential Class
 // ========================================================================
 
-class H2LJ : public PotentialBase, public TabulatedPotential
+class H2LJ : public PotentialBase, public TabulatedPotential<H2LJ>
 {
      public:
          H2LJ (const Container *);
          ~H2LJ ();
 
          /* The Lennard-Jones potential of H2 */
-         double V(const dVec &);
+         inline __attribute__((always_inline)) double V(const dVec &);
 
          /* The gradient of the Lennard-Jones potential */
-         dVec gradV(const dVec &);
+         inline __attribute__((always_inline)) dVec gradV(const dVec &);
 
          /* The Laplacian of the Lennard-Jones potential */
-         double grad2V(const dVec &);
+         inline __attribute__((always_inline)) double grad2V(const dVec &);
+
+         /* Used to construct the lookup tables */
+         inline __attribute__((always_inline)) double valueV (const double);
+         inline __attribute__((always_inline)) double valuedVdr (const double);
+         inline __attribute__((always_inline)) double valued2Vdr2 (const double);
 
      private:
          /* All the parameters of the Lennard Jones potential */
          double EPSILON, SIGMA;
-
-         /* Used to construct the lookup tables */
-         double valueV (const double);
-         double valuedVdr (const double);
-         double valued2Vdr2 (const double);
-
  };
 
 
- inline double H2LJ::V(const dVec &r)
+ inline __attribute__((always_inline)) double H2LJ::V(const dVec &r)
  {
      return direct(lookupV,extV,sqrt(dot(r,r)));
  }
 
- inline dVec H2LJ::gradV(const dVec &r)
+ inline __attribute__((always_inline)) dVec H2LJ::gradV(const dVec &r)
  {
      double rnorm = sqrt(dot(r,r));
      dVec gV;
@@ -911,7 +1060,7 @@ class H2LJ : public PotentialBase, public TabulatedPotential
      return gV;
  }
 
- inline double H2LJ::grad2V(const dVec &r)
+ inline __attribute__((always_inline)) double H2LJ::grad2V(const dVec &r)
  {
      double rnorm = sqrt(dot(r,r));
      double g2V;
@@ -927,29 +1076,29 @@ class H2LJ : public PotentialBase, public TabulatedPotential
  // See: I.F. Silvera and V.V. Goldman, J. Chem. Phys. 69, 4209 (1978).
  // This implementation includes the effective Axilrod-Teller interactions.
 
- class SilveraPotential : public PotentialBase, public TabulatedPotential {
+ class SilveraPotential : public PotentialBase, public TabulatedPotential<SilveraPotential> {
      public:
          SilveraPotential (const Container *);
          ~SilveraPotential ();
 
          /* The Silvera-Goldman Potential */
-         double V(const dVec &);
+         inline __attribute__((always_inline)) double V(const dVec &);
 
          /* The gradient of the Silvera-Goldman potential */
-         dVec gradV(const dVec &);
+         inline __attribute__((always_inline)) dVec gradV(const dVec &);
 
          /* The Laplacian of the Aziz potential */
-         double grad2V(const dVec &);
+         inline __attribute__((always_inline)) double grad2V(const dVec &);
+
+         /* Used to construct the lookup tables */
+         inline __attribute__((always_inline)) double valueV (const double);
+         inline __attribute__((always_inline)) double valuedVdr (const double);
+         inline __attribute__((always_inline)) double valued2Vdr2 (const double);
 
      private:
          /* All the parameters of the Silvera-Goldman potential */
          double ALPHA, BETA, GAMMA, C6, C8, C9, C10, Rc;
          double BohrPerAngstrom, KelvinPerHartree;
-
-         /* Used to construct the lookup tables */
-         double valueV (const double);
-         double valuedVdr (const double);
-         double valued2Vdr2 (const double);
 
          // The damping function needed for the Silvera-Golman potential.
          // The argument must be in units of Bohr radii.
@@ -1043,12 +1192,12 @@ class H2LJ : public PotentialBase, public TabulatedPotential
  };
 
 
- inline double SilveraPotential::V(const dVec &r)
+ inline __attribute__((always_inline)) double SilveraPotential::V(const dVec &r)
  {
      return direct(lookupV,extV,sqrt(dot(r,r)));
  }
 
- inline dVec SilveraPotential::gradV(const dVec &r)
+ inline __attribute__((always_inline)) dVec SilveraPotential::gradV(const dVec &r)
  {
      double rnorm = sqrt(dot(r,r));
      dVec gV;
@@ -1056,7 +1205,7 @@ class H2LJ : public PotentialBase, public TabulatedPotential
      return gV;
  }
 
- inline double SilveraPotential::grad2V(const dVec &r)
+ inline __attribute__((always_inline)) double SilveraPotential::grad2V(const dVec &r)
  {
      double rnorm = sqrt(dot(r,r));
      double g2V;
@@ -1072,19 +1221,24 @@ class H2LJ : public PotentialBase, public TabulatedPotential
  * Computes the value of the semi-empircal Szalewicz potential that is known
  * to be accurate for He-4.
  */
-class SzalewiczPotential : public PotentialBase, public TabulatedPotential {
+class SzalewiczPotential : public PotentialBase, public TabulatedPotential<SzalewiczPotential> {
     public:
         SzalewiczPotential (const Container *);
         ~SzalewiczPotential ();
 
         /* The Szalewicz HFDHE2 Potential */
-        double V(const dVec &);
+        inline __attribute__((always_inline)) double V(const dVec &);
 
         /* The gradient of the Szalewicz potential */
-        dVec gradV(const dVec &);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &);
 
         /* The Laplacian of the Szalewicz potential */
-        double grad2V(const dVec &);
+        inline __attribute__((always_inline)) double grad2V(const dVec &);
+
+        /* Used to construct the lookup tables */
+        inline __attribute__((always_inline)) double valueV (const double);               
+        inline __attribute__((always_inline)) double valuedVdr (const double);                    
+        inline __attribute__((always_inline)) double valued2Vdr2 (const double);
 
     private:
         /* All the parameters of the Szalewicz potential */
@@ -1129,10 +1283,6 @@ class SzalewiczPotential : public PotentialBase, public TabulatedPotential {
                                         87178291200,
                                         1307674368000,
                                         20922789888000};
-        /* Used to construct the lookup tables */
-        double valueV (const double);               
-        double valuedVdr (const double);                    
-        double valued2Vdr2 (const double);
 
         /* The Tang-Toennies damping function needed for the Szalewicz potential */
         /* Can be described as upper incomplete gamma function.*/
@@ -1176,7 +1326,7 @@ class SzalewiczPotential : public PotentialBase, public TabulatedPotential {
 /** 
  * Return the Szalewicz potential for separation r using a lookup table. 
  */
-inline double SzalewiczPotential::V(const dVec &r) {
+inline __attribute__((always_inline)) double SzalewiczPotential::V(const dVec &r) {
     //double rnorm = sqrt(dot(r,r));
     //return newtonGregory(lookupV,extV,rnorm);
     return direct(lookupV,extV,sqrt(dot(r,r)));
@@ -1188,7 +1338,7 @@ inline double SzalewiczPotential::V(const dVec &r) {
  * Return the gradient of Szalewicz potential for separation r using a 
  * lookup table. 
  */
-inline dVec SzalewiczPotential::gradV(const dVec &r) {
+inline __attribute__((always_inline)) dVec SzalewiczPotential::gradV(const dVec &r) {
     double rnorm = sqrt(dot(r,r));
     dVec gV;
     //gV = (newtonGregory(lookupdVdr,extdVdr,rnorm)/rnorm)*r;
@@ -1203,7 +1353,7 @@ inline dVec SzalewiczPotential::gradV(const dVec &r) {
  * lookup table. 
  */
 
-inline double SzalewiczPotential::grad2V(const dVec &r) {
+inline __attribute__((always_inline)) double SzalewiczPotential::grad2V(const dVec &r) {
     double rnorm = sqrt(dot(r,r));
     double g2V;
     //g2V = (newtonGregory(lookupd2Vdr2,extd2Vdr2,rnorm)/rnorm)*r;
@@ -1230,10 +1380,10 @@ class FixedAzizPotential : public PotentialBase  {
 
         /* Return the sum of the Aziz 'interaction energy' between the supplied
          * particle and all fixed particles. */
-        double V(const dVec &r);
+        inline __attribute__((always_inline)) double V(const dVec &r);
 
         /* Return the gradient of the sum of the Aziz 'interaction energy' */
-        dVec gradV(const dVec &r);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r);
 
         /** Initial configuration corresponding to FixedAziz potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
@@ -1268,7 +1418,7 @@ class FixedPositionLJPotential: public PotentialBase  {
 
         /* Return the sum of the Lennard-Jones potential between the supplied
          * particle and the fixed positions found in FILENAME. */
-        double V(const dVec &r);
+        inline __attribute__((always_inline)) double V(const dVec &r);
 
     private:
         const Container *boxPtr;
@@ -1304,7 +1454,7 @@ class Gasparini_1_Potential : public PotentialBase {
         ~Gasparini_1_Potential ();
 
         /** The potential */
-        double V(const dVec &r){ 
+        inline __attribute__((always_inline)) double V(const dVec &r){ 
             double r2 = 0.0;
             if ((r[2] >= -excZ) && (r[2] <= excZ) && (r[1] >= -excY) && (r[1] <= excY))
                 r2 = 1.0*V0;
@@ -1312,10 +1462,10 @@ class Gasparini_1_Potential : public PotentialBase {
         }
 
         /** The gradient of the potential. */
-        dVec gradV(const dVec &) { return dVec{}; }
+        inline __attribute__((always_inline)) dVec gradV(const dVec &) { return dVec{}; }
 
         /** Laplacian of the potential. */
-        double grad2V(const dVec &r) { return 0.0; }
+        inline __attribute__((always_inline)) double grad2V(const dVec &r) { return 0.0; }
 
     
         /** Initial configuration corresponding to FixedAziz potential */
@@ -1347,14 +1497,14 @@ class HardSpherePotential : public PotentialBase  {
         ~HardSpherePotential ();
 
         /** The classical potential */
-        virtual double V(const dVec &r) { 
+        inline __attribute__((always_inline)) double V(const dVec &r) { 
             return ((sqrt(dot(r,r)) <= a) ? LBIG : 0.0);
         }
 
         /** The effective potential */
-        double V(const dVec &, const dVec &);
-        double dVdlambda(const dVec &, const dVec &);
-        double dVdtau(const dVec &, const dVec &);
+        inline __attribute__((always_inline)) double V(const dVec &, const dVec &);
+        inline __attribute__((always_inline)) double dVdlambda(const dVec &, const dVec &);
+        inline __attribute__((always_inline)) double dVdtau(const dVec &, const dVec &);
 
     private:
         double a;               // The strength of the delta function
@@ -1375,14 +1525,14 @@ public:
     ~Delta1DPotential ();
     
     /** The classical potential */
-    virtual double V(const dVec &r) {
+    inline __attribute__((always_inline)) double V(const dVec &r) {
         return (0.0);
     }
     
     /** The effective potential */
-    double V(const dVec &, const dVec &);
-    double dVdlambda(const dVec &, const dVec &);
-    double dVdtau(const dVec &, const dVec &);
+    inline __attribute__((always_inline)) double V(const dVec &, const dVec &);
+    inline __attribute__((always_inline)) double dVdlambda(const dVec &, const dVec &);
+    inline __attribute__((always_inline)) double dVdtau(const dVec &, const dVec &);
     
 private:
 
@@ -1416,14 +1566,14 @@ class HardRodPotential : public PotentialBase  {
         ~HardRodPotential ();
 
         /** The classical potential */
-        virtual double V(const dVec &r) { 
+        inline __attribute__((always_inline)) double V(const dVec &r) { 
             return ((sqrt(dot(r,r)) <= a) ? LBIG : 0.0);
         }
 
         /** The effective potential */
-        double V(const dVec &, const dVec &);
-        double dVdlambda(const dVec &, const dVec &);
-        double dVdtau(const dVec &, const dVec &);
+        inline __attribute__((always_inline)) double V(const dVec &, const dVec &);
+        inline __attribute__((always_inline)) double dVdlambda(const dVec &, const dVec &);
+        inline __attribute__((always_inline)) double dVdtau(const dVec &, const dVec &);
 
     private:
         double a;               // The strength of the delta function
@@ -1491,7 +1641,7 @@ class GraphenePotential: public PotentialBase  {
 
         /* Return the sum of the van der Waals' interaction energy between the supplied
          * particle and the fixed graphene lattice. */
-        double V(const dVec &r);
+        inline __attribute__((always_inline)) double V(const dVec &r);
 
         /** Initial configuration corresponding to graphene-helium vdW potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
@@ -1541,11 +1691,11 @@ class GrapheneLUTPotential: public PotentialBase  {
 
         /* Return the sum of the van der Waals' interaction energy between the supplied
          * particle and the fixed graphene lattice. */
-        double V(const dVec &r);
+        inline __attribute__((always_inline)) double V(const dVec &r);
 
         /* Return the gradient of the sum of the van der Waals' interaction energy between the supplied
          * particle and the fixed graphene lattice. */
-        dVec gradV(const dVec &r);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &r);
         
         /** Initial configuration corresponding to graphene-helium vdW potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
@@ -1617,12 +1767,12 @@ class GrapheneLUT3DPotential: public PotentialBase  {
 
         /* Return the sum of the van der Waals' interaction energy between the supplied
          * particle and the fixed graphene lattice. */
-        double V(const dVec &);
+        inline __attribute__((always_inline)) double V(const dVec &);
 
         /* Return the gradient of the sum of the van der Waals' interaction energy between the supplied
          * particle and the fixed graphene lattice. */
-        dVec gradV(const dVec &);
-        double grad2V(const dVec &);
+        inline __attribute__((always_inline)) dVec gradV(const dVec &);
+        inline __attribute__((always_inline)) double grad2V(const dVec &);
         
         /** Initial configuration corresponding to graphene-helium vdW potential */
 	DynamicArray<dVec,1> initialConfig(const Container*, MTRand &, const int); 
@@ -1668,7 +1818,7 @@ class GrapheneLUT3DPotential: public PotentialBase  {
 /****
  * Put inside unit cell
  ***/
-inline void GrapheneLUT3DPotential::put_in_uc(dVec &r, double cell_length_a, double cell_length_b) {
+inline __attribute__((always_inline)) void GrapheneLUT3DPotential::put_in_uc(dVec &r, double cell_length_a, double cell_length_b) {
     r[0] -= cell_length_a * floor(r[0]/cell_length_a);
     r[1] -= cell_length_b * floor(r[1]/cell_length_b);
 }
@@ -1677,14 +1827,14 @@ inline void GrapheneLUT3DPotential::put_in_uc(dVec &r, double cell_length_a, dou
  * transfer from cartesian to unit cell coordinates
  ***/
 
-inline void GrapheneLUT3DPotential::cartesian_to_uc( dVec &r, double A11, double A12, double A21, double A22) {
+inline __attribute__((always_inline)) void GrapheneLUT3DPotential::cartesian_to_uc( dVec &r, double A11, double A12, double A21, double A22) {
     double _x = A11 * r[0] + A12*r[1];
     double _y = A21 * r[0] + A22*r[1];
     r[0] = _x;
     r[1] = _y;
 }
 
-inline double GrapheneLUT3DPotential::trilinear_interpolation(DynamicArray<double,3> P,dVec r,double dx,double dy,double dz) {
+inline __attribute__((always_inline)) double GrapheneLUT3DPotential::trilinear_interpolation(DynamicArray<double,3> P,dVec r,double dx,double dy,double dz) {
     double x = r[0];
     double y = r[1];
     double z = r[2];
@@ -1712,7 +1862,7 @@ inline double GrapheneLUT3DPotential::trilinear_interpolation(DynamicArray<doubl
     return c;
 }
 
-inline double GrapheneLUT3DPotential::direct_lookup(DynamicArray<double,3> P,dVec r,double dx,double dy,double dz) {
+inline __attribute__((always_inline)) double GrapheneLUT3DPotential::direct_lookup(DynamicArray<double,3> P,dVec r,double dx,double dy,double dz) {
     double x = r[0];
     double y = r[1];
     double z = r[2];
@@ -1949,7 +2099,7 @@ class LeeBenzenePotential: public PotentialBase  {
 
         /* Return the sum of the Lennard-Jones potential between the supplied
          * particle and the fixed positions found in FILENAME. */
-        double V(const dVec &r);
+        inline __attribute__((always_inline)) double V(const dVec &r);
 
     private:
         const Container *boxPtr;
@@ -1990,24 +2140,24 @@ class LeeBenzenePotential: public PotentialBase  {
 
 };      
 
-inline double LeeBenzenePotential::w(double r) {
+inline __attribute__((always_inline)) double LeeBenzenePotential::w(double r) {
         return 1 - exp(-a*(r - r0));
 }
 
-inline double LeeBenzenePotential::wtilde(double r) {
+inline __attribute__((always_inline)) double LeeBenzenePotential::wtilde(double r) {
         if (r >= r0)
             return w(r);
         else
 	    return 0;
 }
 
-inline double LeeBenzenePotential::V2(double r) {
+inline __attribute__((always_inline)) double LeeBenzenePotential::V2(double r) {
     double fval = w(r)*w(r) + c6*(pow(wtilde(r),6));
     fval += c3*(pow(w(r),3)) + c4*(pow(w(r),4)) + c5*(pow(w(r),5));
     return fval;
 }
 
-inline double LeeBenzenePotential::V3(double rk, double rl) {
+inline __attribute__((always_inline)) double LeeBenzenePotential::V3(double rk, double rl) {
     double fval = c11*w(rk)*w(rl) + c22*(pow(w(rk),2))*(pow(w(rl),2));
     fval += c12*(w(rk)*(pow(w(rl),2)) + w(rl)*(pow(w(rk),2)));
     fval += c13*(w(rk)*(pow(w(rl),3)) + w(rl)*(pow(w(rk),3)));
@@ -2016,7 +2166,7 @@ inline double LeeBenzenePotential::V3(double rk, double rl) {
     return fval;
 }
 
-inline double LeeBenzenePotential::V4(double rk, double rl, double rm) {
+inline __attribute__((always_inline)) double LeeBenzenePotential::V4(double rk, double rl, double rm) {
     double fval = c111*w(rk)*w(rl)*w(rm);
     fval += c122*(w(rk)*pow(w(rl),2)*pow(w(rm),2) + w(rl)*pow(w(rm),2)*pow(w(rk),2) + w(rm)*pow(w(rk),2)*pow(w(rl),2));
     fval += c112*(w(rk)*w(rl)*pow(w(rm),2) + w(rk)*pow(w(rl),2)*w(rm) + pow(w(rk),2)*w(rl)*w(rm));
@@ -2044,7 +2194,7 @@ class ShirkovBenzene: public PotentialBase  {
 
         /* Return the sum of the Lennard-Jones potential between the supplied
          * particle and the fixed positions found in FILENAME. */
-        double V(const dVec &r);
+        inline __attribute__((always_inline)) double V(const dVec &r);
 
     private:
         const Container *boxPtr;
@@ -2119,7 +2269,7 @@ class ShirkovBenzene: public PotentialBase  {
 
 }; 
 
-inline std::vector<std::vector<double>> ShirkovBenzene::generate_benzene_geometry() {
+inline __attribute__((always_inline)) std::vector<std::vector<double>> ShirkovBenzene::generate_benzene_geometry() {
     double rc = 1.3915;   // Carbon ring radius (Angstrom)
     double rh = 1.080;    // C–H bond length (Angstrom)
     double rh1 = rc + rh; // Hydrogen distance from center
@@ -2171,8 +2321,8 @@ class GPHeBenzenePotential: public PotentialBase  {
         GPHeBenzenePotential(const Container*, const po::variables_map &);
         ~GPHeBenzenePotential();
 
-        double V(const dVec &r);
-        void V(const dVec*, double*, int);
+        inline __attribute__((always_inline)) double V(const dVec &r);
+        inline __attribute__((always_inline)) void V(const dVec*, double*, int);
 #ifdef USE_GPU
         void gpuV(const double*, double*, int);
 #endif
@@ -2208,15 +2358,13 @@ class GPHeBenzenePotential: public PotentialBase  {
 	double rad2deg(double);
 	double long_range(double,double,double);
 };
-
-inline double GPHeBenzenePotential::deg2rad(double ang) {
+inline __attribute__((always_inline)) double GPHeBenzenePotential::deg2rad(double ang) {
     return (ang*M_PI)/180.0;
 }
-inline double GPHeBenzenePotential::rad2deg(double ang) {
+inline __attribute__((always_inline)) double GPHeBenzenePotential::rad2deg(double ang) {
     return (ang*180.0)/M_PI;
 }
-inline double GPHeBenzenePotential::long_range(double x, double y, double z) {
-
+inline __attribute__((always_inline)) double GPHeBenzenePotential::long_range(double x, double y, double z) {
     double rnorm = std::sqrt(x * x + y * y + z * z);
     double ph0 = std::atan2(y, x);
     double th0 = std::acos(z / rnorm);
