@@ -329,7 +329,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Find Boost
-find_package( Boost 1.71.0 REQUIRED COMPONENTS program_options serialization )
+find_package( Boost 1.71.0 CONFIG REQUIRED COMPONENTS program_options serialization )
 
 # Add include directories
 include_directories( ${Boost_INCLUDE_DIRS} )
